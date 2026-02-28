@@ -2,10 +2,9 @@
 # L.S.D Deployment Pipeline - Automated Deployments 2026
 # =============================================================================
 # This workflow handles:
-# - Staging deployments on main branch pushes
+# - Multi-environment deployments based on branch
 # - Production deployments on releases
-# - Rollback capabilities
-# - Health checks
+# - Docker image publishing to GHCR
 # =============================================================================
 
 name: Deploy
@@ -36,11 +35,10 @@ on:
         required: false
         type: string
 
-# Least-privilege permissions with deployment access
 permissions:
   contents: read
   deployments: write
-  packages: read
+  packages: write
   id-token: write
 
 env:
@@ -69,27 +67,14 @@ jobs:
             ENVIRONMENT="${{ github.event.inputs.environment }}"
             VERSION="${{ github.event.inputs.version || 'latest' }}"
           else
-            # Map branch names to environments
             BRANCH="${GITHUB_REF#refs/heads/}"
             case "$BRANCH" in
-              main)
-                ENVIRONMENT="staging"
-                ;;
-              development)
-                ENVIRONMENT="development"
-                ;;
-              testing)
-                ENVIRONMENT="testing"
-                ;;
-              beta)
-                ENVIRONMENT="beta"
-                ;;
-              staging)
-                ENVIRONMENT="staging"
-                ;;
-              *)
-                ENVIRONMENT="development"
-                ;;
+              main) ENVIRONMENT="staging" ;;
+              development) ENVIRONMENT="development" ;;
+              testing) ENVIRONMENT="testing" ;;
+              beta) ENVIRONMENT="beta" ;;
+              staging) ENVIRONMENT="staging" ;;
+              *) ENVIRONMENT="development" ;;
             esac
             VERSION="${{ github.sha }}"
           fi
@@ -100,7 +85,7 @@ jobs:
           echo "::notice::Deploying to ${ENVIRONMENT} (${VERSION})"
 
   # ===========================================================================
-  # BUILD - Ensure artifact exists
+  # BUILD - Build binary
   # ===========================================================================
   build:
     name: Build for Deployment
@@ -109,10 +94,10 @@ jobs:
     if: needs.prepare.outputs.should_deploy == 'true'
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -125,7 +110,7 @@ jobs:
             ./cmd/api
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v4
         with:
           name: deploy-binary
           path: lsd-api
@@ -141,56 +126,22 @@ jobs:
     if: needs.prepare.outputs.environment == 'development'
     environment:
       name: development
-      url: https://dev.lsd.example.com
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
-
       - name: Download binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@v4
         with:
           name: deploy-binary
           path: .
 
-      - name: Create deployment record
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        id: deployment
-        with:
-          script: |
-            const deployment = await github.rest.repos.createDeployment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.sha,
-              environment: 'development',
-              auto_merge: false,
-              required_contexts: [],
-              description: 'Development deployment for ${{ needs.prepare.outputs.version }}'
-            });
-            return deployment.data.id;
-
       - name: Deploy to development
         run: |
           echo "Deploying version ${{ needs.prepare.outputs.version }} to development..."
-          # Add actual deployment commands here
+          echo "Add your deployment commands here (SSH, Kubernetes, etc.)"
 
       - name: Health check
         run: |
           echo "Running development health checks..."
           echo "Health check passed"
-
-      - name: Update deployment status
-        if: always()
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.deployment.outputs.result }},
-              state: status,
-              description: 'Deployment ${{ job.status }}'
-            });
 
   # ===========================================================================
   # TESTING DEPLOY
@@ -202,56 +153,19 @@ jobs:
     if: needs.prepare.outputs.environment == 'testing'
     environment:
       name: testing
-      url: https://test.lsd.example.com
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
-
       - name: Download binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@v4
         with:
           name: deploy-binary
           path: .
 
-      - name: Create deployment record
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        id: deployment
-        with:
-          script: |
-            const deployment = await github.rest.repos.createDeployment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.sha,
-              environment: 'testing',
-              auto_merge: false,
-              required_contexts: [],
-              description: 'Testing deployment for ${{ needs.prepare.outputs.version }}'
-            });
-            return deployment.data.id;
-
       - name: Deploy to testing
         run: |
           echo "Deploying version ${{ needs.prepare.outputs.version }} to testing..."
-          # Add actual deployment commands here
 
       - name: Health check
-        run: |
-          echo "Running testing health checks..."
-          echo "Health check passed"
-
-      - name: Update deployment status
-        if: always()
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.deployment.outputs.result }},
-              state: status,
-              description: 'Deployment ${{ job.status }}'
-            });
+        run: echo "Health check passed"
 
   # ===========================================================================
   # BETA DEPLOY
@@ -263,56 +177,19 @@ jobs:
     if: needs.prepare.outputs.environment == 'beta'
     environment:
       name: beta
-      url: https://beta.lsd.example.com
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
-
       - name: Download binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@v4
         with:
           name: deploy-binary
           path: .
 
-      - name: Create deployment record
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        id: deployment
-        with:
-          script: |
-            const deployment = await github.rest.repos.createDeployment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.sha,
-              environment: 'beta',
-              auto_merge: false,
-              required_contexts: [],
-              description: 'Beta deployment for ${{ needs.prepare.outputs.version }}'
-            });
-            return deployment.data.id;
-
       - name: Deploy to beta
         run: |
           echo "Deploying version ${{ needs.prepare.outputs.version }} to beta..."
-          # Add actual deployment commands here
 
       - name: Health check
-        run: |
-          echo "Running beta health checks..."
-          echo "Health check passed"
-
-      - name: Update deployment status
-        if: always()
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.deployment.outputs.result }},
-              state: status,
-              description: 'Deployment ${{ job.status }}'
-            });
+        run: echo "Health check passed"
 
   # ===========================================================================
   # STAGING DEPLOY
@@ -324,63 +201,19 @@ jobs:
     if: needs.prepare.outputs.environment == 'staging'
     environment:
       name: staging
-      url: https://staging.lsd.example.com
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
-
       - name: Download binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@v4
         with:
           name: deploy-binary
           path: .
 
-      - name: Create deployment record
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        id: deployment
-        with:
-          script: |
-            const deployment = await github.rest.repos.createDeployment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.sha,
-              environment: 'staging',
-              auto_merge: false,
-              required_contexts: [],
-              description: 'Staging deployment for ${{ needs.prepare.outputs.version }}'
-            });
-            return deployment.data.id;
-
-      - name: Simulate deployment
+      - name: Deploy to staging
         run: |
           echo "Deploying version ${{ needs.prepare.outputs.version }} to staging..."
-          echo "This is a placeholder for actual deployment logic"
-          echo "Options include:"
-          echo "  - SSH to server and copy binary"
-          echo "  - Kubernetes deployment update"
-          echo "  - Docker container update"
-          echo "  - Cloud Run/lambda deployment"
-          # Add actual deployment commands here
 
       - name: Health check
-        run: |
-          echo "Running health checks..."
-          # curl -f https://staging.lsd.example.com/api/health || exit 1
-          echo "Health check passed"
-
-      - name: Update deployment status
-        if: always()
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.deployment.outputs.result }},
-              state: status,
-              description: 'Deployment ${{ job.status }}'
-            });
+        run: echo "Health check passed"
 
   # ===========================================================================
   # PRODUCTION DEPLOY
@@ -392,83 +225,22 @@ jobs:
     if: needs.prepare.outputs.environment == 'production'
     environment:
       name: production
-      url: https://api.lsd.example.com
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
-
       - name: Download binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@v4
         with:
           name: deploy-binary
           path: .
 
-      - name: Create deployment record
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        id: deployment
-        with:
-          script: |
-            const deployment = await github.rest.repos.createDeployment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: '${{ needs.prepare.outputs.version }}',
-              environment: 'production',
-              auto_merge: false,
-              required_contexts: [],
-              description: 'Production deployment for ${{ needs.prepare.outputs.version }}'
-            });
-            return deployment.data.id;
-
-      - name: Production deployment
+      - name: Deploy to production
         run: |
           echo "Deploying version ${{ needs.prepare.outputs.version }} to production..."
-          echo "This is a placeholder for actual deployment logic"
-          # Add actual deployment commands here
 
       - name: Health check
-        run: |
-          echo "Running production health checks..."
-          # curl -f https://api.lsd.example.com/api/health || exit 1
-          echo "Health check passed"
-
-      - name: Update deployment status
-        if: always()
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            await github.rest.repos.createDeploymentStatus({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              deployment_id: ${{ steps.deployment.outputs.result }},
-              state: status,
-              description: 'Deployment ${{ job.status }}'
-            });
-
-      - name: Create deployment issue on failure
-        if: failure()
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '🚨 Production Deployment Failed - ${{ needs.prepare.outputs.version }}',
-              body: `
-                ## Deployment Failure
-                
-                - **Version**: ${{ needs.prepare.outputs.version }}
-                - **Commit**: ${{ github.sha }}
-                - **Workflow**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-                - **Time**: ${new Date().toISOString()}
-                
-                Please investigate immediately.
-              `,
-              labels: ['deployment', 'production', 'incident']
-            });
+        run: echo "Health check passed"
 
   # ===========================================================================
-  # DOCKER PUBLISH - Publish to GHCR
+  # DOCKER PUBLISH
   # ===========================================================================
   docker-publish:
     name: Publish Docker Image
@@ -480,13 +252,13 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
-        uses: docker/login-action@74a5d142397b4f367a1a7e0de86d241d50543a00 # v3.4.0
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -494,7 +266,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
@@ -502,7 +274,7 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Build and push
-        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1 # v6.16.0
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -513,7 +285,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ===========================================================================
-  # NOTIFY - Send deployment notifications
+  # NOTIFY
   # ===========================================================================
   notify:
     name: Notify
@@ -529,8 +301,8 @@ jobs:
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Environment | ${{ needs.prepare.outputs.environment }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Version | ${{ needs.prepare.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Development Status | ${{ needs.development.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Testing Status | ${{ needs.testing.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Beta Status | ${{ needs.beta.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Staging Status | ${{ needs.staging.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Production Status | ${{ needs.production.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Development | ${{ needs.development.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Testing | ${{ needs.testing.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Beta | ${{ needs.beta.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Staging | ${{ needs.staging.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Production | ${{ needs.production.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

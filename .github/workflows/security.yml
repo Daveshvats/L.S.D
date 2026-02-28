@@ -13,21 +13,18 @@ name: Security
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, development]
   pull_request:
-    branches: [main]
+    branches: [main, development]
   schedule:
-    # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
   workflow_dispatch:
 
-# Least-privilege permissions
 permissions:
   contents: read
   security-events: write
   actions: read
 
-# Don't cancel security scans
 concurrency:
   group: security-${{ github.workflow }}-${{ github.sha }}
   cancel-in-progress: false
@@ -44,10 +41,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -65,7 +62,7 @@ jobs:
             ./...
 
       - name: Upload SARIF results
-        uses: github/codeql-action/upload-sarif@fca7ace96b7d713c7035871441bd52efbe76e23d # v3.28.19
+        uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
           sarif_file: results.sarif
@@ -79,10 +76,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -100,7 +97,7 @@ jobs:
           fi
 
       - name: Upload vulncheck results
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: vulncheck-results
@@ -115,9 +112,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for secret scanning
+          fetch-depth: 0
 
       - name: TruffleHog OSS
         uses: trufflesecurity/trufflehog@main
@@ -137,21 +134,20 @@ jobs:
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@fca7ace96b7d713c7035871441bd52efbe76e23d # v3.28.19
+        uses: github/codeql-action/init@v3
         with:
           languages: go
           queries: security-and-quality
-          config-file: ./.github/codeql-config.yml
         continue-on-error: true
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@fca7ace96b7d713c7035871441bd52efbe76e23d # v3.28.19
+        uses: github/codeql-action/autobuild@v3
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@fca7ace96b7d713c7035871441bd52efbe76e23d # v3.28.19
+        uses: github/codeql-action/analyze@v3
         with:
           category: "/language:go"
 
@@ -164,10 +160,10 @@ jobs:
     needs: [gosec, govulncheck]
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Setup Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
@@ -183,7 +179,7 @@ jobs:
           syft . -o cyclonedx-json=sbom-cyclonedx.json
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v4
         with:
           name: sbom
           path: |
@@ -196,9 +192,6 @@ jobs:
           echo "## SBOM Generated" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Formats: SPDX, CycloneDX" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Packages detected:" >> $GITHUB_STEP_SUMMARY
-          jq '.packages | length' sbom-spdx.json >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
   # DEPENDENCY REVIEW - PR dependency changes
@@ -209,14 +202,13 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b16316ce4f82b259767a7fb9d2f # v4.2.2
+        uses: actions/checkout@v4
 
       - name: Dependency Review
-        uses: actions/dependency-review-action@da245569545891d0ea836e62837839b9df018d8f # v4.7.1
+        uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
           allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC
-          deny-licenses: GPL-3.0, AGPL-3.0
 
   # ===========================================================================
   # SECURITY STATUS - Final security gate
@@ -247,32 +239,3 @@ jobs:
             exit 1
           fi
           echo "::notice::All security scans passed"
-
-      - name: Create issue on failure
-        if: failure() && github.event_name == 'schedule'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        with:
-          script: |
-            github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '🚨 Security Scan Failed - ' + new Date().toISOString().split('T')[0],
-              body: `
-                ## Security Scan Failure
-                
-                One or more security scans have failed. Please investigate:
-                
-                - **Workflow Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-                - **Branch**: ${{ github.ref }}
-                - **Commit**: ${{ github.sha }}
-                
-                ### Failed Jobs
-                - Gosec: ${{ needs.gosec.result }}
-                - Govulncheck: ${{ needs.govulncheck.result }}
-                - TruffleHog: ${{ needs.trufflehog.result }}
-                - CodeQL: ${{ needs.codeql.result }}
-                
-                @${{ github.repository_owner }}/security
-              `,
-              labels: ['security', 'automated']
-            })

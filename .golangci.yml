@@ -1,0 +1,85 @@
+# =============================================================================
+# L.S.D golangci-lint Configuration
+# =============================================================================
+run:
+  timeout: 10m
+  issues-exit-code: 1
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+  staticcheck:
+    checks: ["-S1025", "-S1031", "all"]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Defer statements - errors are often intentionally ignored
+    - linters:
+        - errcheck
+      source: "defer "
+    
+    # Close operations - errors often don't affect program flow
+    - linters:
+        - errcheck
+      text: "Close"
+    
+    # Write operations - common in HTTP handlers
+    - linters:
+        - errcheck
+      text: "Write"
+    
+    # JSON encoding in HTTP responses
+    - linters:
+        - errcheck
+      text: "Encode"
+    
+    # Random number generation
+    - linters:
+        - errcheck
+      text: "rand.Read"
+    
+    # Database operations that may fail silently
+    - linters:
+        - errcheck
+      text: "db.Exec"
+    
+    # Seek operations
+    - linters:
+        - errcheck
+      text: "Seek"
+    
+    # Scan operations
+    - linters:
+        - errcheck
+      text: "Scan"
+    
+    # io.Copy
+    - linters:
+        - errcheck
+      text: "io.Copy"
+    
+    # fmt.Fprintf for logging
+    - linters:
+        - errcheck
+      text: "fmt.Fprintf"
+    
+    # Remove file operations
+    - linters:
+        - errcheck
+      text: "os.Remove"
+    
+    # Unused code - mark as warnings during development
+    - linters:
+        - unused

@@ -1,0 +1,99 @@
+# =============================================================================
+# L.S.D Dependabot Configuration
+# =============================================================================
+# Automates dependency updates for:
+# - Go modules
+# - GitHub Actions
+# - Docker base images
+# =============================================================================
+
+version: 2
+
+registries:
+  ghcr:
+    type: docker-registry
+    url: https://ghcr.io
+    username: ${{ github.actor }}
+    password: ${{ secrets.GITHUB_TOKEN }}
+
+updates:
+  # ===========================================================================
+  # Go Modules
+  # ===========================================================================
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "go"
+    reviewers:
+      - "Daveshvats"
+    assignees:
+      - "Daveshvats"
+    groups:
+      go-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Ignore major version bumps for stable dependencies
+      - dependency-name: "github.com/jackc/pgx/v5"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "github.com/ClickHouse/clickhouse-go/v2"
+        update-types: ["version-update:semver-major"]
+
+  # ===========================================================================
+  # GitHub Actions
+  # ===========================================================================
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    reviewers:
+      - "Daveshvats"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # ===========================================================================
+  # Docker
+  # ===========================================================================
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "docker"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "docker"
+    reviewers:
+      - "Daveshvats"
+    registries:
+      - ghcr

@@ -1,0 +1,26 @@
+name: "L.S.D Custom CodeQL Configuration"
+
+# Paths to exclude from analysis
+paths-ignore:
+  - '**/test/**'
+  - '**/tests/**'
+  - '**/*_test.go'
+  - '**/vendor/**'
+  - '**/web/assets/**'
+  - '**/*.pb.go'
+
+# Query suites to run
+queries:
+  - uses: security-and-quality
+  - uses: security-extended
+
+# Query filters
+query-filters:
+  - exclude:
+      id: go/incorrect-integer-conversion
+      severity: warning
+
+# Pack resolution
+packs:
+  go:
+    - codeql/go-all: "*"  # Use all Go queries

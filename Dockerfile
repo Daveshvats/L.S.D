@@ -81,8 +81,8 @@ RUN apk add --no-cache git gcc musl-dev
 
 WORKDIR /app
 
-# Install air for hot reload
-RUN go install github.com/cosmtrek/air@latest
+# Install air for hot reload (pinned version for Go 1.24 compatibility)
+RUN go install github.com/cosmtrek/air@v1.52.3
 
 COPY go.mod go.sum ./
 RUN go mod download

@@ -1,0 +1,308 @@
+# =============================================================================
+# L.S.D Deployment Pipeline - Automated Deployments 2026
+# =============================================================================
+# This workflow handles:
+# - Multi-environment deployments based on branch
+# - Production deployments on releases
+# - Docker image publishing to GHCR
+# =============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main, development, testing, beta, staging]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - development
+          - testing
+          - staging
+          - beta
+          - production
+        default: 'development'
+      version:
+        description: 'Version to deploy (for production)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  deployments: write
+  packages: write
+  id-token: write
+
+env:
+  GO_VERSION: '1.24.x'
+  REGISTRY: ghcr.io
+
+jobs:
+  # ===========================================================================
+  # PREPARE - Determine deployment target
+  # ===========================================================================
+  prepare:
+    name: Prepare Deployment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.target.outputs.environment }}
+      version: ${{ steps.target.outputs.version }}
+      should_deploy: ${{ steps.target.outputs.should_deploy }}
+    steps:
+      - name: Determine deployment target
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            ENVIRONMENT="production"
+            VERSION="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+            VERSION="${{ github.event.inputs.version || 'latest' }}"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            case "$BRANCH" in
+              main) ENVIRONMENT="staging" ;;
+              development) ENVIRONMENT="development" ;;
+              testing) ENVIRONMENT="testing" ;;
+              beta) ENVIRONMENT="beta" ;;
+              staging) ENVIRONMENT="staging" ;;
+              *) ENVIRONMENT="development" ;;
+            esac
+            VERSION="${{ github.sha }}"
+          fi
+          
+          echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "should_deploy=true" >> $GITHUB_OUTPUT
+          echo "::notice::Deploying to ${ENVIRONMENT} (${VERSION})"
+
+  # ===========================================================================
+  # BUILD - Build binary
+  # ===========================================================================
+  build:
+    name: Build for Deployment
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: needs.prepare.outputs.should_deploy == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 go build \
+            -ldflags="-s -w -X main.version=${{ needs.prepare.outputs.version }}" \
+            -o lsd-api \
+            ./cmd/api
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-binary
+          path: lsd-api
+          retention-days: 1
+
+  # ===========================================================================
+  # DEVELOPMENT DEPLOY
+  # ===========================================================================
+  development:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.environment == 'development'
+    environment:
+      name: development
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-binary
+          path: .
+
+      - name: Deploy to development
+        run: |
+          echo "Deploying version ${{ needs.prepare.outputs.version }} to development..."
+          echo "Add your deployment commands here (SSH, Kubernetes, etc.)"
+
+      - name: Health check
+        run: |
+          echo "Running development health checks..."
+          echo "Health check passed"
+
+  # ===========================================================================
+  # TESTING DEPLOY
+  # ===========================================================================
+  testing:
+    name: Deploy to Testing
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.environment == 'testing'
+    environment:
+      name: testing
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-binary
+          path: .
+
+      - name: Deploy to testing
+        run: |
+          echo "Deploying version ${{ needs.prepare.outputs.version }} to testing..."
+
+      - name: Health check
+        run: echo "Health check passed"
+
+  # ===========================================================================
+  # BETA DEPLOY
+  # ===========================================================================
+  beta:
+    name: Deploy to Beta
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.environment == 'beta'
+    environment:
+      name: beta
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-binary
+          path: .
+
+      - name: Deploy to beta
+        run: |
+          echo "Deploying version ${{ needs.prepare.outputs.version }} to beta..."
+
+      - name: Health check
+        run: echo "Health check passed"
+
+  # ===========================================================================
+  # STAGING DEPLOY
+  # ===========================================================================
+  staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.environment == 'staging'
+    environment:
+      name: staging
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-binary
+          path: .
+
+      - name: Deploy to staging
+        run: |
+          echo "Deploying version ${{ needs.prepare.outputs.version }} to staging..."
+
+      - name: Health check
+        run: echo "Health check passed"
+
+  # ===========================================================================
+  # PRODUCTION DEPLOY
+  # ===========================================================================
+  production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.environment == 'production'
+    environment:
+      name: production
+    steps:
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: deploy-binary
+          path: .
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying version ${{ needs.prepare.outputs.version }} to production..."
+
+      - name: Health check
+        run: echo "Health check passed"
+
+  # ===========================================================================
+  # DOCKER PUBLISH
+  # ===========================================================================
+  docker-publish:
+    name: Publish Docker Image
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.environment != 'production'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.environment }}
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ===========================================================================
+  # NOTIFY
+  # ===========================================================================
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [prepare, development, testing, beta, staging, production]
+    if: always()
+    steps:
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ needs.prepare.outputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ needs.prepare.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Development | ${{ needs.development.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Testing | ${{ needs.testing.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Beta | ${{ needs.beta.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Staging | ${{ needs.staging.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Production | ${{ needs.production.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

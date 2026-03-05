@@ -18,9 +18,16 @@ import (
         "github.com/jackc/pgx/v5/pgxpool"
         "github.com/xuri/excelize/v2"
         "golang.org/x/text/transform"
+        "github.com/jackc/pgx/v5/pgxpool"
+        "github.com/xuri/excelize/v2"
+        "golang.org/x/text/transform"
 )
 
 type LoadResult struct {
+        TableName    string   `json:"table_name"`
+        SheetName    string   `json:"sheet_name,omitempty"`
+        RowsInserted int      `json:"rows_inserted"`
+        Columns      []string `json:"columns"`
         TableName    string   `json:"table_name"`
         SheetName    string   `json:"sheet_name,omitempty"`
         RowsInserted int      `json:"rows_inserted"`
@@ -30,9 +37,15 @@ type LoadResult struct {
 type FileLoader struct {
         pool      *pgxpool.Pool
         chunkSize int
+        pool      *pgxpool.Pool
+        chunkSize int
 }
 
 func NewFileLoader(pool *pgxpool.Pool, chunkSize int) *FileLoader {
+        return &FileLoader{
+                pool:      pool,
+                chunkSize: chunkSize,
+        }
         return &FileLoader{
                 pool:      pool,
                 chunkSize: chunkSize,
@@ -106,11 +119,24 @@ func (l *FileLoader) loadCSVStreaming(ctx context.Context, filePath string) (*Lo
                 return nil, err
         }
         defer file.Close()
+        // Open file
+        file, err := os.Open(filePath)
+        if err != nil {
+                return nil, err
+        }
+        defer file.Close()
 
         fileInfo, _ := file.Stat()
         fileSize := fileInfo.Size()
         logger.Debug("file size", "size_mb", float64(fileSize)/(1024*1024))
 
+        // Create reader
+        decoder := GetDecoder(encoding)
+        reader := csv.NewReader(transform.NewReader(file, decoder))
+        reader.Comma = delimiter
+        reader.LazyQuotes = true
+        reader.TrimLeadingSpace = true
+        reader.ReuseRecord = true
         // Create reader
         decoder := GetDecoder(encoding)
         reader := csv.NewReader(transform.NewReader(file, decoder))
@@ -125,7 +151,22 @@ func (l *FileLoader) loadCSVStreaming(ctx context.Context, filePath string) (*Lo
         if err != nil {
                 return nil, err
         }
+        // Read header
+        var header []string
+        firstRow, err := reader.Read()
+        if err != nil {
+                return nil, err
+        }
 
+        if hasHeader {
+                header = CleanColumnNames(firstRow)
+        } else {
+                header = make([]string, len(firstRow))
+                for i := range header {
+                        header[i] = fmt.Sprintf("column_%d", i)
+                }
+                header = CleanColumnNames(header)
+        }
         if hasHeader {
                 header = CleanColumnNames(firstRow)
         } else {
@@ -149,7 +190,23 @@ func (l *FileLoader) loadCSVStreaming(ctx context.Context, filePath string) (*Lo
         if hasHeader {
                 sampleReader.Read()
         }
+        if hasHeader {
+                sampleReader.Read()
+        }
 
+        sampleRows := make([][]string, 0, 1000)
+        for len(sampleRows) < 1000 {
+                record, err := sampleReader.Read()
+                if err == io.EOF {
+                        break
+                }
+                if err != nil {
+                        continue
+                }
+                rowCopy := make([]string, len(record))
+                copy(rowCopy, record)
+                sampleRows = append(sampleRows, rowCopy)
+        }
         sampleRows := make([][]string, 0, 1000)
         for len(sampleRows) < 1000 {
                 record, err := sampleReader.Read()
@@ -181,7 +238,13 @@ func (l *FileLoader) loadCSVStreaming(ctx context.Context, filePath string) (*Lo
 
         // Generate table name
         tableName := generateTableName(filePath)
+        // Generate table name
+        tableName := generateTableName(filePath)
 
+        // Create table
+        if err := l.createTable(ctx, tableName, header, columnTypes); err != nil {
+                return nil, err
+        }
         // Create table
         if err := l.createTable(ctx, tableName, header, columnTypes); err != nil {
                 return nil, err
@@ -197,11 +260,24 @@ func (l *FileLoader) loadCSVStreaming(ctx context.Context, filePath string) (*Lo
         streamReader.LazyQuotes = true
         streamReader.TrimLeadingSpace = true
         streamReader.ReuseRecord = true
+        file.Seek(0, 0)
+        streamDecoder := GetDecoder(encoding)
+        streamReader := csv.NewReader(transform.NewReader(file, streamDecoder))
+        streamReader.Comma = delimiter
+        streamReader.LazyQuotes = true
+        streamReader.TrimLeadingSpace = true
+        streamReader.ReuseRecord = true
 
         if hasHeader {
                 streamReader.Read()
         }
+        if hasHeader {
+                streamReader.Read()
+        }
 
+        chunk := make([][]string, 0, l.chunkSize)
+        totalRows := 0
+        seenRows := make(map[string]bool) // For duplicate detection
         chunk := make([][]string, 0, l.chunkSize)
         totalRows := 0
         seenRows := make(map[string]bool) // For duplicate detection
@@ -228,12 +304,25 @@ func (l *FileLoader) loadCSVStreaming(ctx context.Context, filePath string) (*Lo
                         continue // Skip duplicate
                 }
                 seenRows[rowHash] = true
+                // Check for duplicate rows
+                rowHash := strings.Join(record, "|")
+                if seenRows[rowHash] {
+                        continue // Skip duplicate
+                }
+                seenRows[rowHash] = true
 
                 // Check if row is completely empty
                 if isEmptyRow(record) {
                         continue
                 }
+                // Check if row is completely empty
+                if isEmptyRow(record) {
+                        continue
+                }
 
+                rowCopy := make([]string, len(record))
+                copy(rowCopy, record)
+                chunk = append(chunk, rowCopy)
                 rowCopy := make([]string, len(record))
                 copy(rowCopy, record)
                 chunk = append(chunk, rowCopy)
@@ -252,7 +341,18 @@ func (l *FileLoader) loadCSVStreaming(ctx context.Context, filePath string) (*Lo
                         }
                 }
         }
+                        // Clear seen rows periodically to avoid memory buildup
+                        if totalRows%100000 == 0 {
+                                seenRows = make(map[string]bool)
+                        }
+                }
+        }
 
+        return &LoadResult{
+                TableName:    tableName,
+                RowsInserted: totalRows,
+                Columns:      header,
+        }, nil
         return &LoadResult{
                 TableName:    tableName,
                 RowsInserted: totalRows,
@@ -273,9 +373,14 @@ func (l *FileLoader) loadExcelAllSheets(ctx context.Context, filePath string) ([
         if len(sheets) == 0 {
                 return nil, fmt.Errorf("no sheets found in Excel file")
         }
+        sheets := f.GetSheetList()
+        if len(sheets) == 0 {
+                return nil, fmt.Errorf("no sheets found in Excel file")
+        }
 
         logger.Debug("found sheets", "count", len(sheets), "sheets", sheets)
 
+        results := []LoadResult{}
         results := []LoadResult{}
 
         for _, sheetName := range sheets {
@@ -305,7 +410,11 @@ func (l *FileLoader) loadExcelAllSheets(ctx context.Context, filePath string) ([
         if len(results) == 0 {
                 return nil, fmt.Errorf("no sheets could be processed")
         }
+        if len(results) == 0 {
+                return nil, fmt.Errorf("no sheets could be processed")
+        }
 
+        return results, nil
         return results, nil
 }
 
@@ -317,7 +426,16 @@ func (l *FileLoader) processExcelSheet(ctx context.Context, filePath, sheetName 
 
         header := CleanColumnNames(rows[0])
         dataRows := rows[1:]
+        header := CleanColumnNames(rows[0])
+        dataRows := rows[1:]
 
+        // Remove empty rows
+        cleanedRows := make([][]string, 0, len(dataRows))
+        for _, row := range dataRows {
+                if !isEmptyRow(row) {
+                        cleanedRows = append(cleanedRows, row)
+                }
+        }
         // Remove empty rows
         cleanedRows := make([][]string, 0, len(dataRows))
         for _, row := range dataRows {
@@ -331,6 +449,9 @@ func (l *FileLoader) processExcelSheet(ctx context.Context, filePath, sheetName 
         // Identify and remove empty columns (>99% threshold)
         emptyColumns := IdentifyEmptyColumns(cleanedRows, header, 0.99)
         finalRows, finalHeader := RemoveEmptyColumns(cleanedRows, header, emptyColumns)
+        // Identify and remove empty columns (>99% threshold)
+        emptyColumns := IdentifyEmptyColumns(cleanedRows, header, 0.99)
+        finalRows, finalHeader := RemoveEmptyColumns(cleanedRows, header, emptyColumns)
 
         if len(emptyColumns) > 0 {
                 logger.Debug("removed empty columns", "count", len(emptyColumns))
@@ -339,10 +460,19 @@ func (l *FileLoader) processExcelSheet(ctx context.Context, filePath, sheetName 
         // Infer types
         sampleSize := min(1000, len(finalRows))
         columnTypes := InferColumnTypes(finalRows[:sampleSize], finalHeader)
+        // Infer types
+        sampleSize := min(1000, len(finalRows))
+        columnTypes := InferColumnTypes(finalRows[:sampleSize], finalHeader)
 
         // Generate table name: filename_sheetname_timestamp
         tableName := generateTableNameWithSheet(filePath, sheetName)
+        // Generate table name: filename_sheetname_timestamp
+        tableName := generateTableNameWithSheet(filePath, sheetName)
 
+        // Create table
+        if err := l.createTable(ctx, tableName, finalHeader, columnTypes); err != nil {
+                return nil, fmt.Errorf("failed to create table: %w", err)
+        }
         // Create table
         if err := l.createTable(ctx, tableName, finalHeader, columnTypes); err != nil {
                 return nil, fmt.Errorf("failed to create table: %w", err)
@@ -351,11 +481,26 @@ func (l *FileLoader) processExcelSheet(ctx context.Context, filePath, sheetName 
         // Insert data in chunks
         rowCount := 0
         seenRows := make(map[string]bool)
+        // Insert data in chunks
+        rowCount := 0
+        seenRows := make(map[string]bool)
 
         for i := 0; i < len(finalRows); i += l.chunkSize {
                 end := min(i+l.chunkSize, len(finalRows))
                 chunk := finalRows[i:end]
+        for i := 0; i < len(finalRows); i += l.chunkSize {
+                end := min(i+l.chunkSize, len(finalRows))
+                chunk := finalRows[i:end]
 
+                // Remove duplicates from chunk
+                uniqueChunk := make([][]string, 0, len(chunk))
+                for _, row := range chunk {
+                        rowHash := strings.Join(row, "|")
+                        if !seenRows[rowHash] {
+                                seenRows[rowHash] = true
+                                uniqueChunk = append(uniqueChunk, row)
+                        }
+                }
                 // Remove duplicates from chunk
                 uniqueChunk := make([][]string, 0, len(chunk))
                 for _, row := range chunk {
@@ -373,7 +518,20 @@ func (l *FileLoader) processExcelSheet(ctx context.Context, filePath, sheetName 
                         rowCount += len(uniqueChunk)
                 }
         }
+                if len(uniqueChunk) > 0 {
+                        if err := l.insertBatch(ctx, tableName, finalHeader, columnTypes, uniqueChunk, nil); err != nil {
+                                return nil, fmt.Errorf("failed to insert batch: %w", err)
+                        }
+                        rowCount += len(uniqueChunk)
+                }
+        }
 
+        return &LoadResult{
+                TableName:    tableName,
+                SheetName:    sheetName,
+                RowsInserted: rowCount,
+                Columns:      finalHeader,
+        }, nil
         return &LoadResult{
                 TableName:    tableName,
                 SheetName:    sheetName,
@@ -387,7 +545,19 @@ func (l *FileLoader) loadJSON(ctx context.Context, filePath string) (*LoadResult
         if err != nil {
                 return nil, err
         }
+        data, err := os.ReadFile(filePath)
+        if err != nil {
+                return nil, err
+        }
 
+        var rawRecords []interface{}
+        if err := json.Unmarshal(data, &rawRecords); err != nil {
+                var singleObj map[string]interface{}
+                if err2 := json.Unmarshal(data, &singleObj); err2 != nil {
+                        return nil, fmt.Errorf("invalid JSON: %w", err)
+                }
+                rawRecords = []interface{}{singleObj}
+        }
         var rawRecords []interface{}
         if err := json.Unmarshal(data, &rawRecords); err != nil {
                 var singleObj map[string]interface{}
@@ -400,7 +570,16 @@ func (l *FileLoader) loadJSON(ctx context.Context, filePath string) (*LoadResult
         if len(rawRecords) == 0 {
                 return nil, fmt.Errorf("no records in JSON file")
         }
+        if len(rawRecords) == 0 {
+                return nil, fmt.Errorf("no records in JSON file")
+        }
 
+        var flatRecords []map[string]interface{}
+        for _, record := range rawRecords {
+                flat := make(map[string]interface{})
+                FlattenJSON(record, "", flat)
+                flatRecords = append(flatRecords, flat)
+        }
         var flatRecords []map[string]interface{}
         for _, record := range rawRecords {
                 flat := make(map[string]interface{})
@@ -414,7 +593,19 @@ func (l *FileLoader) loadJSON(ctx context.Context, filePath string) (*LoadResult
                         allKeys[key] = true
                 }
         }
+        allKeys := make(map[string]bool)
+        for _, record := range flatRecords {
+                for key := range record {
+                        allKeys[key] = true
+                }
+        }
 
+        var columns []string
+        for key := range allKeys {
+                columns = append(columns, key)
+        }
+        sort.Strings(columns)
+        cleanedCols := CleanColumnNames(columns)
         var columns []string
         for key := range allKeys {
                 columns = append(columns, key)
@@ -432,16 +623,35 @@ func (l *FileLoader) loadJSON(ctx context.Context, filePath string) (*LoadResult
                 }
                 rows = append(rows, row)
         }
+        var rows [][]string
+        for _, record := range flatRecords {
+                row := make([]string, len(columns))
+                for i, col := range columns {
+                        if val, ok := record[col]; ok && val != nil {
+                                row[i] = fmt.Sprintf("%v", val)
+                        }
+                }
+                rows = append(rows, row)
+        }
 
+        cleanedRows := CleanData(rows)
+        emptyColumns := IdentifyEmptyColumns(cleanedRows, cleanedCols, 0.99)
+        finalRows, finalHeader := RemoveEmptyColumns(cleanedRows, cleanedCols, emptyColumns)
         cleanedRows := CleanData(rows)
         emptyColumns := IdentifyEmptyColumns(cleanedRows, cleanedCols, 0.99)
         finalRows, finalHeader := RemoveEmptyColumns(cleanedRows, cleanedCols, emptyColumns)
 
         sampleSize := min(1000, len(finalRows))
         columnTypes := InferColumnTypes(finalRows[:sampleSize], finalHeader)
+        sampleSize := min(1000, len(finalRows))
+        columnTypes := InferColumnTypes(finalRows[:sampleSize], finalHeader)
 
         tableName := generateTableName(filePath)
+        tableName := generateTableName(filePath)
 
+        if err := l.createTable(ctx, tableName, finalHeader, columnTypes); err != nil {
+                return nil, err
+        }
         if err := l.createTable(ctx, tableName, finalHeader, columnTypes); err != nil {
                 return nil, err
         }
@@ -454,7 +664,20 @@ func (l *FileLoader) loadJSON(ctx context.Context, filePath string) (*LoadResult
                 }
                 rowCount += (end - i)
         }
+        rowCount := 0
+        for i := 0; i < len(finalRows); i += l.chunkSize {
+                end := min(i+l.chunkSize, len(finalRows))
+                if err := l.insertBatch(ctx, tableName, finalHeader, columnTypes, finalRows[i:end], nil); err != nil {
+                        return nil, err
+                }
+                rowCount += (end - i)
+        }
 
+        return &LoadResult{
+                TableName:    tableName,
+                RowsInserted: rowCount,
+                Columns:      finalHeader,
+        }, nil
         return &LoadResult{
                 TableName:    tableName,
                 RowsInserted: rowCount,
@@ -1088,6 +1311,8 @@ func (l *FileLoader) loadJSONLWithOptions(ctx context.Context, filePath string, 
 
         decoder := json.NewDecoder(file)
         var rawRecords []interface{}
+        decoder := json.NewDecoder(file)
+        var rawRecords []interface{}
 
         for decoder.More() {
                 var record interface{}
@@ -1098,6 +1323,9 @@ func (l *FileLoader) loadJSONLWithOptions(ctx context.Context, filePath string, 
                 rawRecords = append(rawRecords, record)
         }
 
+        if len(rawRecords) == 0 {
+                return nil, fmt.Errorf("no valid records in JSONL file")
+        }
         if len(rawRecords) == 0 {
                 return nil, fmt.Errorf("no valid records in JSONL file")
         }
@@ -1397,6 +1625,8 @@ func (l *FileLoader) createTable(ctx context.Context, tableName string, columns 
 
         var colDefs []string
         colDefs = append(colDefs, "s_indx BIGSERIAL PRIMARY KEY")
+        var colDefs []string
+        colDefs = append(colDefs, "s_indx BIGSERIAL PRIMARY KEY")
 
         for _, col := range columns {
                 colType := types[col]
@@ -1405,7 +1635,18 @@ func (l *FileLoader) createTable(ctx context.Context, tableName string, columns 
                 }
                 colDefs = append(colDefs, fmt.Sprintf("\"%s\" %s", col, colType))
         }
+        for _, col := range columns {
+                colType := types[col]
+                if colType == "" {
+                        colType = "TEXT"
+                }
+                colDefs = append(colDefs, fmt.Sprintf("\"%s\" %s", col, colType))
+        }
 
+        createSQL := fmt.Sprintf("CREATE TABLE \"%s\" (%s)", tableName, strings.Join(colDefs, ", "))
+        if _, err := l.pool.Exec(ctx, createSQL); err != nil {
+                return err
+        }
         createSQL := fmt.Sprintf("CREATE TABLE \"%s\" (%s)", tableName, strings.Join(colDefs, ", "))
         if _, err := l.pool.Exec(ctx, createSQL); err != nil {
                 return err
@@ -1423,12 +1664,21 @@ func (l *FileLoader) insertBatch(ctx context.Context, tableName string, columns 
 
         // Number of columns to insert (either all columns or filtered columns)
         activeColumns := len(columns)
+        // Number of columns to insert (either all columns or filtered columns)
+        activeColumns := len(columns)
 
         // PostgreSQL parameter limit is 65535
         // Calculate safe batch size: 65535 / number_of_columns
         maxParamsPerBatch := 65000 // Leave some buffer
         maxRowsPerBatch := maxParamsPerBatch / activeColumns
+        // PostgreSQL parameter limit is 65535
+        // Calculate safe batch size: 65535 / number_of_columns
+        maxParamsPerBatch := 65000 // Leave some buffer
+        maxRowsPerBatch := maxParamsPerBatch / activeColumns
 
+        if maxRowsPerBatch < 1 {
+                maxRowsPerBatch = 1
+        }
         if maxRowsPerBatch < 1 {
                 maxRowsPerBatch = 1
         }
@@ -1441,7 +1691,18 @@ func (l *FileLoader) insertBatch(ctx context.Context, tableName string, columns 
                 if endIdx > len(rows) {
                         endIdx = len(rows)
                 }
+        // Split rows into smaller batches if needed
+        for startIdx := 0; startIdx < len(rows); startIdx += maxRowsPerBatch {
+                endIdx := startIdx + maxRowsPerBatch
+                if endIdx > len(rows) {
+                        endIdx = len(rows)
+                }
 
+                batch := rows[startIdx:endIdx]
+                if err := l.executeBatch(ctx, tableName, columns, types, batch, indexMap); err != nil {
+                        return err
+                }
+        }
                 batch := rows[startIdx:endIdx]
                 if err := l.executeBatch(ctx, tableName, columns, types, batch, indexMap); err != nil {
                         return err
@@ -1449,9 +1710,16 @@ func (l *FileLoader) insertBatch(ctx context.Context, tableName string, columns 
         }
 
         return nil
+        return nil
 }
 
 // executeBatch performs the actual INSERT query
+// indexMap maps new column index -> original data column index
+// If indexMap is nil, columns are used directly (no filtering was done)
+func (l *FileLoader) executeBatch(ctx context.Context, tableName string, columns []string, types map[string]string, rows [][]string, indexMap map[int]int) error {
+        if len(rows) == 0 {
+                return nil
+        }
 // indexMap maps new column index -> original data column index
 // If indexMap is nil, columns are used directly (no filtering was done)
 func (l *FileLoader) executeBatch(ctx context.Context, tableName string, columns []string, types map[string]string, rows [][]string, indexMap map[int]int) error {
@@ -1466,14 +1734,30 @@ func (l *FileLoader) executeBatch(ctx context.Context, tableName string, columns
                         indexMap[i] = i
                 }
         }
+        // If no indexMap, create a direct mapping (col i -> data index i)
+        if indexMap == nil {
+                indexMap = make(map[int]int)
+                for i := range columns {
+                        indexMap[i] = i
+                }
+        }
 
+        var placeholders []string
+        var values []interface{}
+        paramIdx := 1
         var placeholders []string
         var values []interface{}
         paramIdx := 1
 
         for _, row := range rows {
                 var rowPlaceholders []string
+        for _, row := range rows {
+                var rowPlaceholders []string
 
+                // Iterate over columns using the indexMap to get correct data indices
+                for newColIdx, col := range columns {
+                        // Get the original data column index
+                        origColIdx := indexMap[newColIdx]
                 // Iterate over columns using the indexMap to get correct data indices
                 for newColIdx, col := range columns {
                         // Get the original data column index
@@ -1482,7 +1766,45 @@ func (l *FileLoader) executeBatch(ctx context.Context, tableName string, columns
                         var val interface{}
                         if origColIdx < len(row) {
                                 val = strings.TrimSpace(row[origColIdx])
+                        var val interface{}
+                        if origColIdx < len(row) {
+                                val = strings.TrimSpace(row[origColIdx])
 
+                                colType := types[col]
+                                if colType == "INTEGER" || colType == "BIGINT" {
+                                        if val != "" {
+                                                if intVal, err := strconv.ParseInt(val.(string), 10, 64); err == nil {
+                                                        val = intVal
+                                                } else {
+                                                        val = nil
+                                                }
+                                        } else {
+                                                val = nil
+                                        }
+                                } else if colType == "NUMERIC" && val != "" {
+                                        cleanVal := strings.ReplaceAll(val.(string), ",", "")
+                                        cleanVal = strings.TrimPrefix(cleanVal, "$")
+                                        cleanVal = strings.TrimPrefix(cleanVal, "€")
+                                        if floatVal, err := strconv.ParseFloat(cleanVal, 64); err == nil {
+                                                val = floatVal
+                                        } else {
+                                                val = nil
+                                        }
+                                } else if colType == "BOOLEAN" && val != "" {
+                                        lower := strings.ToLower(val.(string))
+                                        if lower == "true" || lower == "yes" || lower == "t" || lower == "y" || val == "1" {
+                                                val = true
+                                        } else if lower == "false" || lower == "no" || lower == "f" || lower == "n" || val == "0" {
+                                                val = false
+                                        } else {
+                                                val = nil
+                                        }
+                                } else if val == "" {
+                                        val = nil
+                                }
+                        } else {
+                                val = nil
+                        }
                                 colType := types[col]
                                 if colType == "INTEGER" || colType == "BIGINT" {
                                         if val != "" {
@@ -1523,10 +1845,21 @@ func (l *FileLoader) executeBatch(ctx context.Context, tableName string, columns
                         values = append(values, val)
                         paramIdx++
                 }
+                        rowPlaceholders = append(rowPlaceholders, fmt.Sprintf("$%d", paramIdx))
+                        values = append(values, val)
+                        paramIdx++
+                }
 
                 placeholders = append(placeholders, "("+strings.Join(rowPlaceholders, ", ")+")")
         }
+                placeholders = append(placeholders, "("+strings.Join(rowPlaceholders, ", ")+")")
+        }
 
+        // Quote column names
+        quotedCols := make([]string, len(columns))
+        for i, col := range columns {
+                quotedCols[i] = fmt.Sprintf("\"%s\"", col)
+        }
         // Quote column names
         quotedCols := make([]string, len(columns))
         for i, col := range columns {
@@ -1539,7 +1872,15 @@ func (l *FileLoader) executeBatch(ctx context.Context, tableName string, columns
                 strings.Join(quotedCols, ", "),
                 strings.Join(placeholders, ", "),
         )
+        insertSQL := fmt.Sprintf(
+                "INSERT INTO \"%s\" (%s) VALUES %s",
+                tableName,
+                strings.Join(quotedCols, ", "),
+                strings.Join(placeholders, ", "),
+        )
 
+        _, err := l.pool.Exec(ctx, insertSQL, values...)
+        return err
         _, err := l.pool.Exec(ctx, insertSQL, values...)
         return err
 }
@@ -1548,18 +1889,30 @@ func generateTableName(filePath string) string {
         base := filepath.Base(filePath)
         ext := filepath.Ext(base)
         name := strings.TrimSuffix(base, ext)
+        base := filepath.Base(filePath)
+        ext := filepath.Ext(base)
+        name := strings.TrimSuffix(base, ext)
 
+        re := regexp.MustCompile(`[^a-zA-Z0-9_]+`)
+        clean := re.ReplaceAllString(name, "_")
+        clean = strings.ToLower(strings.Trim(clean, "_"))
         re := regexp.MustCompile(`[^a-zA-Z0-9_]+`)
         clean := re.ReplaceAllString(name, "_")
         clean = strings.ToLower(strings.Trim(clean, "_"))
 
         timestamp := time.Now().Format("20060102_150405")
         tableName := fmt.Sprintf("%s_%s", clean, timestamp)
+        timestamp := time.Now().Format("20060102_150405")
+        tableName := fmt.Sprintf("%s_%s", clean, timestamp)
 
         if len(tableName) > 63 {
                 tableName = tableName[:63]
         }
+        if len(tableName) > 63 {
+                tableName = tableName[:63]
+        }
 
+        return tableName
         return tableName
 }
 
@@ -1567,15 +1920,25 @@ func generateTableNameWithSheet(filePath, sheetName string) string {
         base := filepath.Base(filePath)
         ext := filepath.Ext(base)
         name := strings.TrimSuffix(base, ext)
+        base := filepath.Base(filePath)
+        ext := filepath.Ext(base)
+        name := strings.TrimSuffix(base, ext)
 
         re := regexp.MustCompile(`[^a-zA-Z0-9_]+`)
+        re := regexp.MustCompile(`[^a-zA-Z0-9_]+`)
 
+        cleanName := re.ReplaceAllString(name, "_")
+        cleanName = strings.ToLower(strings.Trim(cleanName, "_"))
         cleanName := re.ReplaceAllString(name, "_")
         cleanName = strings.ToLower(strings.Trim(cleanName, "_"))
 
         cleanSheet := re.ReplaceAllString(sheetName, "_")
         cleanSheet = strings.ToLower(strings.Trim(cleanSheet, "_"))
+        cleanSheet := re.ReplaceAllString(sheetName, "_")
+        cleanSheet = strings.ToLower(strings.Trim(cleanSheet, "_"))
 
+        timestamp := time.Now().Format("20060102_150405")
+        tableName := fmt.Sprintf("%s_%s_%s", cleanName, cleanSheet, timestamp)
         timestamp := time.Now().Format("20060102_150405")
         tableName := fmt.Sprintf("%s_%s_%s", cleanName, cleanSheet, timestamp)
 
@@ -1588,6 +1951,16 @@ func generateTableNameWithSheet(filePath, sheetName string) string {
                         tableName = tableName[:63]
                 }
         }
+        if len(tableName) > 63 {
+                maxNameLen := 63 - len(cleanSheet) - len(timestamp) - 2
+                if maxNameLen > 0 && len(cleanName) > maxNameLen {
+                        cleanName = cleanName[:maxNameLen]
+                        tableName = fmt.Sprintf("%s_%s_%s", cleanName, cleanSheet, timestamp)
+                } else {
+                        tableName = tableName[:63]
+                }
+        }
 
+        return tableName
         return tableName
 }

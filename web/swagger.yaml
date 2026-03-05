@@ -24,11 +24,13 @@ info:
     
     ## Rate Limits
     
-    | Client Type | Rate Limit |
-    |-------------|------------|
-    | Anonymous | 100 req/min |
-    | Authenticated User | 1,000 req/min |
-    | AI Agent (API Key) | 5,000 req/min |
+    | Client Type | Rate Limit | Auth Endpoints |
+    |-------------|------------|----------------|
+    | Anonymous | 100 req/min | 1 req/sec |
+    | Authenticated User | 1,000 req/min | 1 req/sec |
+    | AI Agent (API Key) | 5,000 req/min | 1 req/sec |
+    
+    **Note:** Authentication endpoints (/api/auth/login, /api/auth/register) have stricter rate limiting (1 request/second) to prevent brute-force attacks.
     
     ## Scopes
     
@@ -38,7 +40,34 @@ info:
     - `pipeline` - Access to pipeline endpoints
     - `admin` - Full administrative access
     
-  version: 2.0.0
+    ## Security Features
+    
+    ### Request Body Limits
+    - Maximum request body size: **10MB**
+    - Multipart file uploads: **64MB** in-memory, larger files use temp storage
+    
+    ### IP Address Validation
+    - X-Forwarded-For and X-Real-IP headers are validated before use
+    - Invalid IP addresses in proxy headers are ignored
+    
+    ### SQL Injection Prevention
+    - All table names are validated with `ValidateTableName()` 
+    - Identifiers are quoted with `QuoteIdent()` 
+    - Parameterized queries are used for all search operations
+    
+    ### Token Security
+    - JWT tokens include `token_type` claim to prevent confusion attacks
+    - API keys use bcrypt hashing with cost 12
+    - Session tokens are securely generated using `crypto/rand`
+    
+    ### Password Requirements
+    - Minimum 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one number
+    - At least one special character
+
+  version: 2.3.0
   contact:
     name: L.S.D Support
     url: https://github.com/Daveshvats/L.S.D
@@ -62,9 +91,11 @@ tags:
   - name: Search
     description: Full-text search across tables
   - name: Pipeline
-    description: Data pipeline management
+    description: Data pipeline management and file loading
   - name: CDC
     description: Change Data Capture status
+  - name: System
+    description: Health checks and system status
 
 security:
   - BearerAuth: []
@@ -179,7 +210,12 @@ components:
         password:
           type: string
           format: password
-          description: Min 8 chars, must include uppercase, lowercase, number, and special char
+          description: |
+            Min 8 chars, must include:
+            - Uppercase letter
+            - Lowercase letter  
+            - Number
+            - Special character
           example: "P@ssw0rd!"
         name:
           type: string
@@ -216,6 +252,24 @@ components:
         error:
           type: string
           example: "Authentication required"
+        status:
+          type: string
+          example: "error"
+        code:
+          type: string
+          example: "401"
+
+    ValidationError:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Password does not meet requirements"
+        details:
+          type: array
+          items:
+            type: string
+          example: ["Must contain uppercase letter", "Must contain special character"]
 
     TableInfo:
       type: object
@@ -270,6 +324,590 @@ components:
         query:
           type: string
 
+    # ═══════════════════════════════════════════════════════════
+    # FILE LOADING SCHEMAS
+    # ═══════════════════════════════════════════════════════════
+
+    LoadOptions:
+      type: object
+      description: Configuration options for file loading
+      properties:
+        has_header:
+          type: boolean
+          nullable: true
+          description: Override header detection (true/false, null = auto-detect)
+          example: true
+        header_row:
+          type: integer
+          description: Row number to use as header (1-indexed), 0 = auto-detect
+          example: 1
+        custom_headers:
+          type: array
+          items:
+            type: string
+          description: User-provided column names
+          example: ["id", "name", "email", "amount"]
+        skip_rows:
+          type: integer
+          description: Skip N rows before processing
+          default: 0
+          example: 2
+        delimiter:
+          type: string
+          description: Override delimiter (e.g., ",", ";", "\\t")
+          example: ","
+        encoding:
+          type: string
+          description: Override encoding (e.g., "UTF-8", "Latin-1", "Windows-1252")
+          example: "UTF-8"
+        remove_empty:
+          type: boolean
+          default: true
+          description: Remove empty rows
+        remove_duplicates:
+          type: boolean
+          default: true
+          description: Remove duplicate rows
+        infer_types:
+          type: boolean
+          default: false
+          description: Enable type inference (TEXT only if false)
+        empty_threshold:
+          type: number
+          default: 0.99
+          description: Threshold for removing empty columns (0-1)
+        max_file_size:
+          type: integer
+          default: 524288000
+          description: Max file size in bytes (default 500MB)
+        table_name:
+          type: string
+          description: Custom table name (optional)
+          example: "sales_data"
+        sheets:
+          type: array
+          items:
+            type: string
+          description: Excel sheets to process (empty = all)
+          example: ["Sheet1", "Data"]
+
+    HeaderInfo:
+      type: object
+      description: Detailed header detection results
+      properties:
+        has_header:
+          type: boolean
+          description: Whether a header was detected
+        header_row:
+          type: integer
+          description: Detected header row (1-indexed)
+        confidence:
+          type: number
+          format: float
+          description: Detection confidence (0-1)
+          example: 0.95
+        reason:
+          type: string
+          description: Reasoning for the detection
+          example: "Row 1 appears to be header (score: 0.85)"
+        preview:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+          description: First N rows for user review
+        column_count:
+          type: integer
+          description: Number of columns detected
+        sample_values:
+          type: array
+          items:
+            type: string
+          description: First value from each column
+
+    PreviewFileRequest:
+      type: object
+      required:
+        - file_path
+      properties:
+        file_path:
+          type: string
+          description: Path to the file to preview
+          example: "/data/uploads/sales_data.csv"
+        rows:
+          type: integer
+          default: 20
+          description: Number of rows to preview
+        detect_types:
+          type: boolean
+          default: false
+          description: Whether to detect column types
+
+    PreviewFileResult:
+      type: object
+      properties:
+        encoding:
+          type: string
+          description: Detected file encoding
+          example: "UTF-8"
+        delimiter:
+          type: string
+          description: Detected delimiter
+          example: ","
+        header_info:
+          $ref: '#/components/schemas/HeaderInfo'
+        preview:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+          description: Preview rows
+        column_count:
+          type: integer
+          description: Number of columns
+        total_rows:
+          type: integer
+          description: Total rows in file (if calculable)
+        detected_types:
+          type: object
+          additionalProperties:
+            type: string
+          description: Detected column types (if requested)
+          example: {"id": "TEXT", "amount": "NUMERIC"}
+        column_names:
+          type: array
+          items:
+            type: string
+          description: Detected/cleaned column names
+          example: ["id", "name", "email", "amount"]
+
+    LoadResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success, failed]
+        file:
+          type: string
+          description: Original file name
+        table_name:
+          type: string
+          description: Created table name
+        rows_inserted:
+          type: integer
+          description: Number of rows inserted
+        columns:
+          type: array
+          items:
+            type: string
+          description: Column names in the created table
+        sheets:
+          type: array
+          items:
+            type: object
+            properties:
+              table_name:
+                type: string
+              sheet_name:
+                type: string
+              rows_inserted:
+                type: integer
+              columns:
+                type: array
+                items:
+                  type: string
+          description: Results for Excel sheets (multi-sheet files)
+        count:
+          type: integer
+          description: Number of sheets processed (Excel only)
+
+    StartJobRequest:
+      type: object
+      required:
+        - folder_path
+      properties:
+        folder_path:
+          type: string
+          description: Path to the folder containing files to process
+          example: "/data/uploads"
+        recursive:
+          type: boolean
+          default: false
+          description: Process subdirectories recursively
+        default_options:
+          $ref: '#/components/schemas/LoadOptions'
+        file_options:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/LoadOptions'
+          description: Per-file option overrides
+
+    JobProgress:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled]
+        progress:
+          type: integer
+          description: Percentage complete (0-100)
+        total_files:
+          type: integer
+        processed_files:
+          type: integer
+        total_rows:
+          type: integer
+        current_file:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        estimated_completion:
+          type: string
+          format: date-time
+        error:
+          type: string
+        log_path:
+          type: string
+
+    CDCStatus:
+      type: object
+      properties:
+        running:
+          type: boolean
+        last_sync:
+          type: string
+          format: date-time
+        tables_synced:
+          type: integer
+        total_events:
+          type: integer
+        lag_seconds:
+          type: integer
+
+    # ═══════════════════════════════════════════════════════════
+    # FOLDER SCANNING & CONFIG SCHEMAS (v2.2.0)
+    # ═══════════════════════════════════════════════════════════
+
+    FileDiscovery:
+      type: object
+      description: Information about a discovered file
+      properties:
+        file_path:
+          type: string
+          description: Full path to the file
+          example: "/data/uploads/sales_data.csv"
+        file_name:
+          type: string
+          description: Name of the file
+          example: "sales_data.csv"
+        file_size:
+          type: integer
+          description: File size in bytes
+          example: 1024000
+        extension:
+          type: string
+          description: File extension
+          example: ".csv"
+        encoding:
+          type: string
+          description: Detected file encoding
+          example: "UTF-8"
+        detected_delimiter:
+          type: string
+          description: Detected delimiter character
+          example: ","
+        detected_header:
+          $ref: '#/components/schemas/HeaderInfo'
+        preview:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+          description: Preview rows from the file
+        error:
+          type: string
+          description: Error message if detection failed
+
+    FolderScanResult:
+      type: object
+      description: Complete folder scan results
+      properties:
+        folder_path:
+          type: string
+          description: Scanned folder path
+        total_files:
+          type: integer
+          description: Total files in folder
+        supported_files:
+          type: integer
+          description: Number of supported files found
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileDiscovery'
+          description: List of discovered files
+        scan_time:
+          type: string
+          description: Time taken to scan (human readable)
+        scan_duration_ms:
+          type: integer
+          description: Time taken to scan in milliseconds
+          example: 12178
+        errors:
+          type: array
+          items:
+            type: string
+          description: Any errors encountered during scan
+
+    QuickOptions:
+      type: object
+      description: Simplified options for common use cases (only 1-3 fields needed)
+      properties:
+        has_header:
+          type: boolean
+          nullable: true
+          description: Override header detection (true/false, null = auto-detect)
+        delimiter:
+          type: string
+          description: Override delimiter (",", ";", "\t")
+          example: ","
+        encoding:
+          type: string
+          description: Override encoding
+          example: "UTF-8"
+        exclude_files:
+          type: array
+          items:
+            type: string
+          description: Files to exclude from processing
+          example: ["temp.csv", "test_data.xlsx"]
+        exclude_patterns:
+          type: array
+          items:
+            type: string
+          description: Glob patterns for files to exclude
+          example: ["*.tmp", "*_backup.*"]
+
+    JobPreview:
+      type: object
+      description: Preview of what will happen (dry_run response)
+      properties:
+        scan_id:
+          type: string
+          description: ID of the scan (can be used to start job)
+        folder_path:
+          type: string
+          description: Folder path being processed
+        total_files:
+          type: integer
+          description: Total files to process
+        files_to_process:
+          type: array
+          items:
+            type: object
+            properties:
+              file_path:
+                type: string
+              file_name:
+                type: string
+              table_name:
+                type: string
+              estimated_rows:
+                type: integer
+              columns:
+                type: array
+                items:
+                  type: string
+              options_applied:
+                $ref: '#/components/schemas/LoadOptions'
+              confidence:
+                type: number
+              confidence_ok:
+                type: boolean
+              warnings:
+                type: array
+                items:
+                  type: string
+        files_excluded:
+          type: array
+          items:
+            type: string
+          description: Files that were excluded
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Overall warnings
+        estimated_rows:
+          type: integer
+          description: Estimated total rows
+        ready:
+          type: boolean
+          description: Whether all files have good confidence
+        confidence:
+          type: number
+          description: Average detection confidence
+
+    StartJobV2Request:
+      type: object
+      description: Unified job start request with preview mode
+      properties:
+        scan_id:
+          type: string
+          description: ID from scan-folder response (recommended)
+        config_id:
+          type: string
+          description: ID of saved configuration
+        folder_path:
+          type: string
+          description: Direct folder path (will auto-scan)
+        recursive:
+          type: boolean
+          default: false
+        quick_options:
+          $ref: '#/components/schemas/QuickOptions'
+        file_options:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/LoadOptions'
+          description: Per-file option overrides
+        dry_run:
+          type: boolean
+          default: false
+          description: If true, returns preview without loading data
+        skip_scan_validation:
+          type: boolean
+          default: false
+          description: Skip validation warnings and proceed
+
+    PipelineConfig:
+      type: object
+      description: Saved pipeline configuration
+      properties:
+        id:
+          type: string
+          description: Configuration ID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        user_id:
+          type: string
+          description: Owner user ID
+        name:
+          type: string
+          description: Configuration name
+          example: "Monthly Sales Import"
+        description:
+          type: string
+          description: Configuration description
+          example: "Import monthly sales data from uploads folder"
+        folder_path:
+          type: string
+          description: Target folder path
+          example: "/data/uploads/sales"
+        recursive:
+          type: boolean
+          description: Process subdirectories
+          default: false
+        default_options:
+          $ref: '#/components/schemas/LoadOptions'
+        file_options:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/LoadOptions'
+          description: Per-file option overrides
+        file_discoveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileDiscovery'
+          description: Cached file discoveries from last scan
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ScanFolderRequest:
+      type: object
+      required:
+        - folder_path
+      properties:
+        folder_path:
+          type: string
+          description: Path to folder to scan
+          example: "/data/uploads"
+        recursive:
+          type: boolean
+          default: false
+          description: Scan subdirectories
+        deep_scan:
+          type: boolean
+          default: false
+          description: Analyze headers/delimiters (slower but detailed)
+        parallel:
+          type: boolean
+          default: false
+          description: Use parallel processing for large folders
+
+    SaveConfigRequest:
+      type: object
+      required:
+        - name
+        - folder_path
+      properties:
+        id:
+          type: string
+          description: Config ID (for updates)
+        name:
+          type: string
+          description: Configuration name
+          example: "Monthly Sales Import"
+        description:
+          type: string
+          description: Configuration description
+        folder_path:
+          type: string
+          description: Target folder path
+        recursive:
+          type: boolean
+          default: false
+        default_options:
+          $ref: '#/components/schemas/LoadOptions'
+        file_options:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/LoadOptions'
+        file_discoveries:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileDiscovery'
+
+    StartJobWithConfigRequest:
+      type: object
+      properties:
+        config_id:
+          type: string
+          description: ID of saved configuration to use
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        folder_path:
+          type: string
+          description: Override folder path (optional if config_id provided)
+        recursive:
+          type: boolean
+          description: Override recursive setting
+        default_options:
+          $ref: '#/components/schemas/LoadOptions'
+        file_options:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/LoadOptions'
+          description: Per-file option overrides
+
 paths:
   # ═══════════════════════════════════════════════════════════
   # AUTHENTICATION ENDPOINTS
@@ -279,7 +917,17 @@ paths:
     post:
       tags: [Authentication]
       summary: Register a new user
-      description: Create a new user account with email, username, and password
+      description: |
+        Create a new user account with email, username, and password.
+        
+        **Rate Limit:** 1 request/second (stricter than normal endpoints)
+        
+        **Password Requirements:**
+        - Minimum 8 characters
+        - At least one uppercase letter
+        - At least one lowercase letter
+        - At least one number
+        - At least one special character
       security: []
       requestBody:
         required: true
@@ -308,9 +956,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/ValidationError'
         '409':
           description: Email or username already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
           content:
             application/json:
               schema:
@@ -320,7 +974,10 @@ paths:
     post:
       tags: [Authentication]
       summary: Login to your account
-      description: Authenticate with email/username and password
+      description: |
+        Authenticate with email/username and password.
+        
+        **Rate Limit:** 1 request/second (stricter than normal endpoints to prevent brute-force)
       security: []
       requestBody:
         required: true
@@ -349,6 +1006,12 @@ paths:
                 type: string
         '401':
           description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
           content:
             application/json:
               schema:
@@ -421,7 +1084,10 @@ paths:
     post:
       tags: [Authentication]
       summary: Create a new API key
-      description: Generate a new API key with specified scopes and rate limit
+      description: |
+        Generate a new API key with specified scopes and rate limit.
+        
+        The full API key is only shown once - store it securely!
       requestBody:
         required: true
         content:
@@ -528,6 +1194,9 @@ paths:
                     type: boolean
                   redis:
                     type: boolean
+                  version:
+                    type: string
+                    example: "2.1.0"
 
   # ═══════════════════════════════════════════════════════════
   # TABLES ENDPOINTS
@@ -557,14 +1226,17 @@ paths:
     get:
       tags: [Tables]
       summary: Get table schema
-      description: Get detailed schema information for a specific table
+      description: |
+        Get detailed schema information for a specific table.
+        
+        **Security:** Table names are validated to prevent SQL injection.
       parameters:
         - name: table
           in: path
           required: true
           schema:
             type: string
-          description: Table name
+          description: Table name (validated)
       responses:
         '200':
           description: Table schema
@@ -596,6 +1268,12 @@ paths:
                     type: array
                     items:
                       type: object
+        '400':
+          description: Invalid table name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Table not found
           content:
@@ -686,7 +1364,10 @@ paths:
     get:
       tags: [Search]
       summary: Search within a table
-      description: Full-text search within a specific table
+      description: |
+        Full-text search within a specific table.
+        
+        **Security:** Uses parameterized queries to prevent SQL injection.
       parameters:
         - name: table
           in: path
@@ -788,6 +1469,8 @@ paths:
       description: |
         Optimized full-text search across all indexed tables using ClickHouse bitmap indexing.
         This is the fastest way to search billions of records.
+        
+        **Security:** All search queries use parameterized queries with `?` placeholders.
       parameters:
         - name: q
           in: query
@@ -830,37 +1513,21 @@ paths:
     post:
       tags: [Pipeline]
       summary: Start a pipeline job
-      description: Start a new data pipeline job to process CSV files
+      description: |
+        Start a new data pipeline job to process files from a folder.
+        
+        **Security:** 
+        - Paths are validated to prevent directory traversal
+        - Access to system paths (/etc, /root, etc.) is blocked
+        - File size limits are enforced
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - file_path
-                - table_name
-              properties:
-                file_path:
-                  type: string
-                  description: Path to the CSV file
-                table_name:
-                  type: string
-                  description: Target table name
-                options:
-                  type: object
-                  properties:
-                    delimiter:
-                      type: string
-                      default: ","
-                    has_header:
-                      type: boolean
-                      default: true
-                    batch_size:
-                      type: integer
-                      default: 10000
+              $ref: '#/components/schemas/StartJobRequest'
       responses:
-        '200':
+        '202':
           description: Job started
           content:
             application/json:
@@ -869,10 +1536,14 @@ paths:
                 properties:
                   job_id:
                     type: string
-                  status:
-                    type: string
                   message:
                     type: string
+        '403':
+          description: Path not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/pipeline/jobs:
     get:
@@ -889,7 +1560,112 @@ paths:
                   jobs:
                     type: array
                     items:
-                      type: object
+                      $ref: '#/components/schemas/JobProgress'
+                  count:
+                    type: integer
+    post:
+      tags: [Pipeline]
+      summary: Start a job with preview mode (recommended)
+      description: |
+        Unified endpoint to start a pipeline job. Recommended workflow:
+        
+        1. **Scan folder**: `POST /api/pipeline/scan-folder` with `deep_scan: true`
+        2. **Preview**: `POST /api/pipeline/jobs` with `dry_run: true` to see what will happen
+        3. **Start**: `POST /api/pipeline/jobs` with `dry_run: false` to load data
+        
+        **Input options (use one):**
+        - `scan_id` - ID from scan-folder (recommended)
+        - `config_id` - ID of saved configuration
+        - `folder_path` - Direct path (will auto-scan)
+        
+        **Quick Options:** Use `quick_options` for simple configuration (only 1-3 fields)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartJobV2Request'
+            examples:
+              preview_mode:
+                summary: Preview what will happen
+                value:
+                  folder_path: "/data/uploads"
+                  dry_run: true
+              start_with_scan:
+                summary: Start from scan ID
+                value:
+                  scan_id: "scan_1234567890"
+                  dry_run: false
+              with_options:
+                summary: With custom options
+                value:
+                  folder_path: "/data/uploads"
+                  quick_options:
+                    has_header: true
+                    delimiter: ","
+                    exclude_files: ["temp.csv"]
+                  file_options:
+                    "/data/uploads/tab_file.csv":
+                      delimiter: "\t"
+                  dry_run: false
+      responses:
+        '200':
+          description: Preview result (dry_run=true)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preview:
+                    $ref: '#/components/schemas/JobPreview'
+                  dry_run:
+                    type: boolean
+                  message:
+                    type: string
+                  scan_id:
+                    type: string
+                  ready:
+                    type: boolean
+        '202':
+          description: Job started (dry_run=false)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  scan_id:
+                    type: string
+                  status:
+                    type: string
+                  total_files:
+                    type: integer
+                  message:
+                    type: string
+                  monitor:
+                    type: string
+        '400':
+          description: Validation error or low confidence
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  message:
+                    type: string
+                  suggestion:
+                    type: string
+                  can_override:
+                    type: boolean
+        '403':
+          description: Path not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/pipeline/jobs/{job_id}:
     get:
@@ -907,19 +1683,13 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  job_id:
-                    type: string
-                  status:
-                    type: string
-                    enum: [pending, running, completed, failed]
-                  progress:
-                    type: integer
-                  total:
-                    type: integer
-                  error:
-                    type: string
+                $ref: '#/components/schemas/JobProgress'
+        '404':
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /api/pipeline/jobs/{job_id}/logs:
     get:
@@ -935,21 +1705,9 @@ paths:
         '200':
           description: Job logs
           content:
-            application/json:
+            text/plain:
               schema:
-                type: object
-                properties:
-                  logs:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        time:
-                          type: string
-                        level:
-                          type: string
-                        message:
-                          type: string
+                type: string
 
   /api/pipeline/jobs/{job_id}/stream:
     get:
@@ -971,6 +1729,404 @@ paths:
                 type: string
 
   # ═══════════════════════════════════════════════════════════
+  # FILE MANAGEMENT ENDPOINTS
+  # ═══════════════════════════════════════════════════════════
+
+  /api/pipeline/preview:
+    post:
+      tags: [Pipeline]
+      summary: Preview a file
+      description: |
+        Preview a file before loading to see detected encoding, delimiter, 
+        header information, and sample data. Use this to determine how to 
+        configure your load options.
+        
+        **Supported Encodings:**
+        - UTF-8 (default)
+        - Latin-1 (ISO-8859-1)
+        - Windows-1252
+        - UTF-16LE/UTF-16BE
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewFileRequest'
+      responses:
+        '200':
+          description: File preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewFileResult'
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pipeline/upload:
+    post:
+      tags: [Pipeline]
+      summary: Upload and process a file
+      description: |
+        Upload a file (CSV, Excel, JSON) with custom loading options.
+        Supports custom headers, header row selection, skip rows, and more.
+        
+        **Supported File Types:**
+        - CSV (.csv, .txt)
+        - Excel (.xlsx, .xls)
+        - JSON (.json)
+        - JSON Lines (.jsonl)
+        
+        **Limits:**
+        - In-memory: 64MB
+        - Max file size: 500MB (configurable)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to upload
+                options:
+                  type: string
+                  description: JSON string of LoadOptions
+                  example: '{"has_header": true, "delimiter": ",", "skip_rows": 0}'
+      responses:
+        '200':
+          description: File processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadResult'
+        '400':
+          description: Invalid file or options
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: File too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pipeline/load:
+    post:
+      tags: [Pipeline]
+      summary: Load a file from path
+      description: |
+        Load a file from a server path with custom options.
+        Useful for processing files already on the server.
+        
+        **Security:**
+        - Paths are validated to prevent directory traversal
+        - System paths are blocked (/etc, /root, /var, etc.)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - file_path
+              properties:
+                file_path:
+                  type: string
+                  description: Path to the file on the server
+                  example: "/data/uploads/sales_data.csv"
+                options:
+                  $ref: '#/components/schemas/LoadOptions'
+      responses:
+        '200':
+          description: File loaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadResult'
+        '403':
+          description: Path not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pipeline/detect-header:
+    post:
+      tags: [Pipeline]
+      summary: Detect header information
+      description: |
+        Detect header row and configuration for a file.
+        Returns confidence score and reasoning for the detection.
+        
+        The detection algorithm checks for:
+        - Common header keywords (id, name, email, etc.)
+        - Data type patterns (numeric values indicate data, not headers)
+        - Delimiter rows (----, ====)
+        - CamelCase and snake_case patterns
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - file_path
+              properties:
+                file_path:
+                  type: string
+                  description: Path to the file
+                options:
+                  $ref: '#/components/schemas/LoadOptions'
+      responses:
+        '200':
+          description: Header detection result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeaderInfo'
+
+  # ═══════════════════════════════════════════════════════════
+  # FOLDER SCANNING & CONFIGURATION ENDPOINTS (v2.2.0)
+  # ═══════════════════════════════════════════════════════════
+
+  /api/pipeline/scan-folder:
+    post:
+      tags: [Pipeline]
+      summary: Scan a folder for files
+      description: |
+        Scan a folder and return information about all files, including detected
+        headers, delimiters, and encodings. Use this before starting a job to
+        review and customize how each file will be processed.
+        
+        **Two scan modes:**
+        - **Quick scan** (deep_scan=false): Fast file listing only
+        - **Deep scan** (deep_scan=true): Analyze headers, delimiters, encodings
+        
+        **Security:**
+        - Paths are validated to prevent directory traversal
+        - System paths are blocked
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScanFolderRequest'
+      responses:
+        '200':
+          description: Folder scan results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FolderScanResult'
+        '403':
+          description: Path not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pipeline/configs:
+    get:
+      tags: [Pipeline]
+      summary: List saved configurations
+      description: Get all saved pipeline configurations for the authenticated user
+      responses:
+        '200':
+          description: List of configurations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PipelineConfig'
+                  count:
+                    type: integer
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags: [Pipeline]
+      summary: Save a configuration
+      description: |
+        Save a pipeline configuration with default options and per-file overrides.
+        Saved configs can be reused for recurring imports.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveConfigRequest'
+      responses:
+        '200':
+          description: Configuration saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  config:
+                    $ref: '#/components/schemas/PipelineConfig'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pipeline/configs/{id}:
+    get:
+      tags: [Pipeline]
+      summary: Get a configuration
+      description: Retrieve a specific pipeline configuration by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Configuration ID
+      responses:
+        '200':
+          description: Configuration details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelineConfig'
+        '404':
+          description: Configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags: [Pipeline]
+      summary: Delete a configuration
+      description: Delete a saved pipeline configuration
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Configuration ID
+      responses:
+        '200':
+          description: Configuration deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '404':
+          description: Configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pipeline/start-with-config:
+    post:
+      tags: [Pipeline]
+      summary: Start job with configuration
+      description: |
+        Start a pipeline job using a saved configuration ID or inline options.
+        
+        **Workflow:**
+        1. Scan folder: `POST /api/pipeline/scan-folder`
+        2. Review detected headers/delimiters
+        3. Customize options per file (optional)
+        4. Save config: `POST /api/pipeline/configs` (optional)
+        5. Start job: `POST /api/pipeline/start-with-config`
+        
+        **Features:**
+        - Use saved config by ID, or provide options inline
+        - Override any setting from the saved config
+        - Per-file option overrides for custom processing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartJobWithConfigRequest'
+      responses:
+        '202':
+          description: Job started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  message:
+                    type: string
+                  config_used:
+                    type: boolean
+                    description: Whether a saved config was used
+        '400':
+          description: Invalid request (missing folder_path or config_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Path not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ═══════════════════════════════════════════════════════════
   # CDC ENDPOINTS
   # ═══════════════════════════════════════════════════════════
 
@@ -985,23 +2141,40 @@ paths:
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/CDCStatus'
+
+  /api/cdc/start:
+    post:
+      tags: [CDC]
+      summary: Start CDC synchronization
+      description: Start the Change Data Capture process
+      responses:
+        '200':
+          description: CDC started
+          content:
+            application/json:
+              schema:
                 type: object
                 properties:
-                  is_running:
+                  success:
                     type: boolean
-                  available:
+                  message:
+                    type: string
+
+  /api/cdc/stop:
+    post:
+      tags: [CDC]
+      summary: Stop CDC synchronization
+      description: Stop the Change Data Capture process
+      responses:
+        '200':
+          description: CDC stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
                     type: boolean
-                  total_tables:
-                    type: integer
-                  table_statuses:
-                    type: object
-                    additionalProperties:
-                      type: object
-                      properties:
-                        last_sync:
-                          type: string
-                          format: date-time
-                        records_synced:
-                          type: integer
-                        status:
-                          type: string
+                  message:
+                    type: string

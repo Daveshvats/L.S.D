@@ -33,6 +33,7 @@ Whether you're building a web GUI, Telegram bot, WhatsApp integration, or need s
 | ⚡ **Keyset Pagination** | O(1) cursor-based pagination that stays fast regardless of dataset size |
 | 🚄 **ClickHouse Integration** | Sub-second multi-column text search on billions of rows using ngram indexes |
 | 🔄 **CDC Pipeline** | Automatic PostgreSQL → ClickHouse synchronization with delete handling |
+| 📁 **File Loading Pipeline** | Load CSV, XLSX, XLS, JSON files with auto-detection of headers, delimiters, and encodings |
 | 📦 **Redis Caching** | Built-in caching layer with configurable TTL for lightning-fast responses |
 | 🔐 **Authentication** | JWT-based auth with API key support for AI agents and integrations |
 | 📊 **Rate Limiting** | Configurable per-client rate limiting (100-5000 req/min) |
@@ -151,6 +152,45 @@ curl "http://localhost:5000/api/tables/your_table/search?q=search_term"
 | `/api/tables/{table}/stats` | GET | Get table statistics |
 | `/api/cdc/status` | GET | CDC pipeline sync status |
 | `/api/health` | GET | Health check endpoint |
+
+### Pipeline & File Loading
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/pipeline/scan-folder` | POST | Scan folder for files (quick or deep scan) |
+| `/api/pipeline/jobs` | GET | List all pipeline jobs |
+| `/api/pipeline/jobs` | POST | Start job with preview mode (dry_run) |
+| `/api/pipeline/jobs/{id}` | GET | Get job progress/status |
+| `/api/pipeline/jobs/{id}/stream` | GET | SSE stream for real-time progress |
+| `/api/pipeline/jobs/{id}/logs` | GET | Get job logs |
+| `/api/pipeline/preview` | POST | Preview file before loading |
+| `/api/pipeline/upload` | POST | Upload and process file |
+| `/api/pipeline/load` | POST | Load file from server path |
+| `/api/pipeline/configs` | GET/POST | Manage saved configurations |
+
+**Supported File Types:** CSV, XLSX, **XLS** (Excel 97-2003), JSON, JSONL
+
+#### Recommended Pipeline Workflow
+
+```bash
+# 1. Scan folder with deep analysis
+curl -X POST http://localhost:5000/api/pipeline/scan-folder \
+  -H "Content-Type: application/json" \
+  -d '{"folder_path": "/data/uploads", "deep_scan": true}'
+
+# 2. Preview what will happen (dry run)
+curl -X POST http://localhost:5000/api/pipeline/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"folder_path": "/data/uploads", "dry_run": true}'
+
+# 3. Start the job
+curl -X POST http://localhost:5000/api/pipeline/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"folder_path": "/data/uploads", "quick_options": {"has_header": true}}'
+
+# 4. Monitor progress
+curl http://localhost:5000/api/pipeline/jobs/{job_id}
+```
 
 ### Authentication
 

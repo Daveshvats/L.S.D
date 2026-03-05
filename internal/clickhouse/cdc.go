@@ -75,6 +75,7 @@ var cdcExcludedTables = map[string]bool{
         "api_keys":            true,
         "audit_logs":          true,
         "rate_limit_entries":  true,
+        "pipeline_configs":    true,
 }
 
 func NewCDCManager(pgPool *pgxpool.Pool, chRepo *SearchRepository, registry *schema.SchemaRegistry, cfg CDCConfig) *CDCManager {

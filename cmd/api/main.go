@@ -18,17 +18,14 @@ import (
         "os/signal"
         "syscall"
         "time"
-
-        asciiart "github.com/romance-dev/ascii-art"
-        _ "github.com/romance-dev/ascii-art/fonts"
 )
 
 func main() {
         cfg := config.LoadConfig()
         ctx := context.Background()
 
-        asciiart.NewFigure("L.S.D", "isometric1", true).Print()
-        log.Printf("🚀 L.S.D API Server Starting")
+        log.Println("═══════════════════════════════════════════════════════════")
+        log.Println("🚀 L.S.D (Large Search Data) API Server Starting")
         log.Println("═══════════════════════════════════════════════════════════")
 
         pool, err := database.NewPool(ctx, cfg.DatabaseURL)
@@ -103,6 +100,17 @@ func main() {
         // Initialize Pipeline Processor
         pipelineProcessor := pipeline.NewPipelineProcessor(pool.Pool, "./ErrorFiles")
 
+        // Initialize FileLoader for direct file operations
+        fileLoader := pipeline.NewFileLoader(pool.Pool, 10000) // 10k chunk size
+
+        // Initialize Config Repository for saving pipeline configurations
+        configRepo := pipeline.NewConfigRepository(pool.Pool)
+        if err := configRepo.CreateTable(ctx); err != nil {
+                log.Printf("⚠️  Failed to create pipeline_configs table: %v", err)
+        } else {
+                log.Println("✅ Pipeline configs table initialized")
+        }
+
         if cdcManager != nil {
                 pipelineProcessor.SetCDCTrigger(func(tableName string) error {
                         log.Printf("🔄 Pipeline completed for table: %s, triggering CDC sync...", tableName)
@@ -116,18 +124,15 @@ func main() {
                 log.Println("🔗 Pipeline-to-CDC integration enabled")
         }
 
-        pipelineHandler := handlers.NewPipelineHandler(pipelineProcessor)
+        pipelineHandler := handlers.NewPipelineHandlerWithConfig(pipelineProcessor, fileLoader, configRepo)
 
         // ═══════════════════════════════════════════════════════════
         // 🔐 AUTHENTICATION SETUP (Updated with JWT)
         // ═══════════════════════════════════════════════════════════
 
-        jwtSecret := cfg.JWTSecret
-        if jwtSecret == "" {
-                jwtSecret = "lsd-jwt-secret-key-2026-change-in-production"
-        }
-
-        authService := auth.NewAuthService(jwtSecret)
+        // SECURITY: JWT secret is loaded from config, which validates it in production
+        // No fallback here - config.LoadConfig() handles secret generation/validation
+        authService := auth.NewAuthService(cfg.JWTSecret)
         authHandler := handlers.NewAuthHandler(pool.Pool, authService)
         authMiddleware := middleware.NewAuthMiddleware(authService, pool.Pool)
 
@@ -140,6 +145,14 @@ func main() {
         // ═══════════════════════════════════════════════════════════
         // 🔓 PUBLIC ROUTES
         // ═══════════════════════════════════════════════════════════
+
+        // SECURITY: Create stricter rate limiter for auth endpoints (brute-force protection)
+        authRateLimiter := middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+                RequestsPerSecond: 1,  // 1 request per second
+                Burst:             5,  // Allow short bursts
+                CleanupInterval:   5 * time.Minute,
+                VisitorExpiry:     15 * time.Minute,
+        })
 
         // Auth Pages
         mux.HandleFunc("GET /login", func(w http.ResponseWriter, r *http.Request) {
@@ -157,9 +170,9 @@ func main() {
                 http.ServeFile(w, r, "./web/docs.html")
         })
 
-        // Auth API Endpoints
-        mux.HandleFunc("POST /api/auth/register", authHandler.Register)
-        mux.HandleFunc("POST /api/auth/login", authHandler.Login)
+        // Auth API Endpoints - SECURITY: Apply stricter rate limiting to prevent brute-force
+        mux.Handle("POST /api/auth/register", authRateLimiter(http.HandlerFunc(authHandler.Register)))
+        mux.Handle("POST /api/auth/login", authRateLimiter(http.HandlerFunc(authHandler.Login)))
         mux.HandleFunc("POST /api/auth/logout", authHandler.Logout)
         mux.HandleFunc("GET /api/auth/me", authMiddleware.RequireAuth(http.HandlerFunc(authHandler.GetMe)).ServeHTTP)
 
@@ -214,6 +227,20 @@ func main() {
         mux.Handle("GET /api/pipeline/jobs", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.ListJobs)))
         mux.Handle("GET /api/pipeline/jobs/{job_id}/stream", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.StreamJobProgress)))
         mux.Handle("GET /api/pipeline/jobs/{job_id}/logs", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.GetJobLogs)))
+        
+        // New Pipeline Endpoints (File Preview, Upload, Load)
+        mux.Handle("POST /api/pipeline/preview", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.PreviewFile)))
+        mux.Handle("POST /api/pipeline/upload", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.UploadFile)))
+        mux.Handle("POST /api/pipeline/load", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.LoadFile)))
+        mux.Handle("POST /api/pipeline/detect-header", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.DetectHeader)))
+
+        // Folder Scanning & Configuration Endpoints (v2.2.0)
+        mux.Handle("POST /api/pipeline/scan-folder", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.ScanFolder)))
+        mux.Handle("GET /api/pipeline/configs", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.ListConfigs)))
+        mux.Handle("POST /api/pipeline/configs", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.SaveConfig)))
+        mux.Handle("GET /api/pipeline/configs/{id}", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.GetConfig)))
+        mux.Handle("DELETE /api/pipeline/configs/{id}", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.DeleteConfig)))
+        mux.Handle("POST /api/pipeline/start-with-config", authMiddleware.RequireAuth(http.HandlerFunc(pipelineHandler.StartJobWithConfig)))
 
         // CDC Status
         mux.Handle("GET /api/cdc/status", authMiddleware.RequireAuth(http.HandlerFunc(dynamicHandler.GetCDCStatus)))
@@ -222,16 +249,27 @@ func main() {
         // 🛡️ GLOBAL MIDDLEWARE
         // ═══════════════════════════════════════════════════════════
 
-        handler := middleware.RateLimiter(mux)
-        handler = middleware.CORS(handler)
+        // SECURITY: Request body size limit (10MB)
+        handler := middleware.RequestBodyLimiter(10 * 1024 * 1024)(mux)
+
+        // SECURITY: Rate limiting
+        handler = middleware.RateLimiter(handler)
+
+        // SECURITY: CORS with configured origins
+        corsConfig := middleware.DefaultCORSConfig()
+        if cfg.IsProduction() {
+                // In production, origins should be explicitly configured
+                // Add your production origins here via environment variable
+        }
+        handler = middleware.CORS(corsConfig)(handler)
         handler = middleware.Logger(handler)
 
         server := &http.Server{
                 Addr:         fmt.Sprintf(":%s", cfg.Port),
                 Handler:      handler,
-                ReadTimeout:  15 * time.Second,
-                WriteTimeout: 15 * time.Second,
-                IdleTimeout:  60 * time.Second,
+                ReadTimeout:  30 * time.Second,
+                WriteTimeout: 5 * time.Minute, // Increased for long-running operations (folder scanning, file uploads)
+                IdleTimeout:  120 * time.Second,
         }
 
         go func() {
@@ -257,6 +295,14 @@ func main() {
                 log.Println("🔌 Closing ClickHouse connection pool...")
                 if err := chPool.Close(); err != nil {
                         log.Printf("⚠️  Error closing ClickHouse pool: %v", err)
+                }
+        }
+
+        // SECURITY: Close cache to stop cleanup goroutine and prevent leaks
+        if multiCache != nil {
+                log.Println("📦 Closing cache...")
+                if err := multiCache.Close(); err != nil {
+                        log.Printf("⚠️  Error closing cache: %v", err)
                 }
         }
 

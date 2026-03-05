@@ -3,8 +3,10 @@ package middleware
 import (
         "context"
         "encoding/json"
+        "log"
         "net/http"
         "strings"
+        "time"
 
         "highperf-api/internal/auth"
 
@@ -204,11 +206,18 @@ func (m *AuthMiddleware) validateAPIKey(ctx context.Context, apiKey string) *Use
                 scopes = []string{"read"} // default scope
         }
 
-        // Update last_used_at asynchronously
+        // Update last_used_at asynchronously with proper error handling
         go func() {
-                m.db.Exec(context.Background(), 
-                        "UPDATE api_keys SET last_used_at = NOW() WHERE key_hash = $1", 
+                // SECURITY: Use context with timeout to prevent hanging
+                ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+                defer cancel()
+
+                _, err := m.db.Exec(ctx,
+                        "UPDATE api_keys SET last_used_at = NOW() WHERE key_hash = $1",
                         keyHash)
+                if err != nil {
+                        log.Printf("Warning: failed to update API key last_used_at: %v", err)
+                }
         }()
 
         return &UserContext{

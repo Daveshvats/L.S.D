@@ -1,575 +1,308 @@
 {
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
-    "title": "High-Performance Dynamic API",
-    "version": "1.0.0",
-    "description": "L.S.D (Large Seach of Data) API with real-time search, CDC sync, cursor pagination, and ClickHouse/PostgreSQL support",
+    "title": "L.S.D API",
+    "description": "# Large Search of Data API\n\nHigh-performance API for searching and managing billions of records across PostgreSQL and ClickHouse.\n\n## Authentication\n\nThe API supports two authentication methods:\n\n### 1. JWT Bearer Token\nInclude your JWT token in the Authorization header:\n```\nAuthorization: Bearer <your_jwt_token>\n```\n\n### 2. API Key\nInclude your API key in the X-API-Key header:\n```\nX-API-Key: lsd_live_your_api_key_here\n```\n\n## Rate Limits\n\n| Client Type | Rate Limit | Auth Endpoints |\n|-------------|------------|----------------|\n| Anonymous | 100 req/min | 1 req/sec |\n| Authenticated User | 1,000 req/min | 1 req/sec |\n| AI Agent (API Key) | 5,000 req/min | 1 req/sec |\n\n**Note:** Authentication endpoints (/api/auth/login, /api/auth/register) have stricter rate limiting (1 request/second) to prevent brute-force attacks.\n\n## Scopes\n\n- `read` - Read access to tables and records\n- `write` - Write access (future use)\n- `search` - Search across all tables\n- `pipeline` - Access to pipeline endpoints\n- `admin` - Full administrative access\n\n## Security Features\n\n### Request Body Limits\n- Maximum request body size: **10MB**\n- Multipart file uploads: **64MB** in-memory, larger files use temp storage\n\n### IP Address Validation\n- X-Forwarded-For and X-Real-IP headers are validated before use\n- Invalid IP addresses in proxy headers are ignored\n\n### SQL Injection Prevention\n- All table names are validated with `ValidateTableName()` \n- Identifiers are quoted with `QuoteIdent()` \n- Parameterized queries are used for all search operations\n\n### Token Security\n- JWT tokens include `token_type` claim to prevent confusion attacks\n- API keys use bcrypt hashing with cost 12\n- Session tokens are securely generated using `crypto/rand`\n\n### Password Requirements\n- Minimum 8 characters\n- At least one uppercase letter\n- At least one lowercase letter\n- At least one number\n- At least one special character\n",
+    "version": "2.2.0",
     "contact": {
-      "name": "API Support"
+      "name": "L.S.D Support",
+      "url": "https://github.com/Daveshvats/L.S.D"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
     }
   },
   "servers": [
     {
       "url": "http://localhost:5000",
       "description": "Local development server"
+    },
+    {
+      "url": "https://api.lsd.local",
+      "description": "Production server"
     }
   ],
   "tags": [
     {
-      "name": "Health & Monitoring",
-      "description": "Service health and status endpoints"
+      "name": "Authentication",
+      "description": "User authentication and API key management"
     },
     {
-      "name": "Table Discovery",
-      "description": "Database table introspection"
+      "name": "Tables",
+      "description": "Table discovery and schema information"
     },
     {
-      "name": "Data Access",
-      "description": "Record retrieval and pagination"
+      "name": "Records",
+      "description": "CRUD operations on table records"
     },
     {
       "name": "Search",
-      "description": "Full-text search capabilities"
+      "description": "Full-text search across tables"
     },
     {
-      "name": "Analytics",
-      "description": "Statistics and metrics"
+      "name": "Pipeline",
+      "description": "Data pipeline management and file loading"
     },
     {
-      "name": "Webhooks",
-      "description": "Bot integration endpoints"
+      "name": "CDC",
+      "description": "Change Data Capture status"
+    },
+    {
+      "name": "System",
+      "description": "Health checks and system status"
     }
   ],
-  "paths": {
-    "/api/health": {
-      "get": {
-        "tags": [
-          "Health & Monitoring"
-        ],
-        "summary": "Health Check",
-        "description": "Check API service status and database connections. Use for Kubernetes liveness/readiness probes.",
-        "operationId": "getHealth",
-        "responses": {
-          "200": {
-            "description": "Service is healthy",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "example": "healthy"
-                    },
-                    "service": {
-                      "type": "string",
-                      "example": "dynamic-api"
-                    },
-                    "tables_count": {
-                      "type": "integer",
-                      "example": 15
-                    },
-                    "clickhouse": {
-                      "type": "boolean",
-                      "example": true
-                    },
-                    "redis": {
-                      "type": "boolean",
-                      "example": true
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+  "security": [
+    {
+      "BearerAuth": []
+    },
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT token obtained from /api/auth/login"
+      },
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key with prefix lsd_live_"
       }
     },
-    "/api/cdc/status": {
-      "get": {
-        "tags": [
-          "Health & Monitoring"
-        ],
-        "summary": "CDC Status",
-        "description": "Get Change Data Capture sync status for ClickHouse. Monitor real-time sync lag between PostgreSQL and ClickHouse.",
-        "operationId": "getCDCStatus",
-        "responses": {
-          "200": {
-            "description": "CDC status retrieved successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "is_running": {
-                      "type": "boolean",
-                      "example": true
-                    },
-                    "available": {
-                      "type": "boolean",
-                      "example": true
-                    },
-                    "total_tables": {
-                      "type": "integer",
-                      "example": 5
-                    },
-                    "table_statuses": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "object",
-                        "properties": {
-                          "synced": {
-                            "type": "integer"
-                          },
-                          "last_sync": {
-                            "type": "string",
-                            "format": "date-time"
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tables": {
-      "get": {
-        "tags": [
-          "Table Discovery"
-        ],
-        "summary": "List All Tables",
-        "description": "Discover all available database tables and their capabilities. Use to auto-generate UI forms, build query builders, or API documentation.",
-        "operationId": "getTables",
-        "responses": {
-          "200": {
-            "description": "List of tables retrieved",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "tables": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/TableInfo"
-                      }
-                    },
-                    "count": {
-                      "type": "integer"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tables/{table}/schema": {
-      "get": {
-        "tags": [
-          "Table Discovery"
-        ],
-        "summary": "Get Table Schema",
-        "description": "Get detailed column definitions for a specific table. Use to generate TypeScript types, validate inputs, or build dynamic forms.",
-        "operationId": "getTableSchema",
-        "parameters": [
-          {
-            "name": "table",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Table name",
-            "example": "b2b"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Table schema retrieved",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TableSchema"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tables/{table}/records": {
-      "get": {
-        "tags": [
-          "Data Access"
-        ],
-        "summary": "Get Records (Paginated)",
-        "description": "Fetch records with cursor-based pagination, filtering, and sorting. Use for infinite scroll, data tables, or export pipelines.",
-        "operationId": "getRecords",
-        "parameters": [
-          {
-            "name": "table",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Table name"
+    "schemas": {
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "1"
           },
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 20,
-              "maximum": 100
-            },
-            "description": "Records per page"
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "user@example.com"
           },
-          {
-            "name": "cursor",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "description": "Pagination cursor from previous response"
+          "username": {
+            "type": "string",
+            "example": "johndoe"
           },
-          {
-            "name": "sort_by",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "description": "Column to sort by"
+          "name": {
+            "type": "string",
+            "example": "John Doe"
           },
-          {
-            "name": "sort_dir",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "asc",
-                "desc"
-              ]
-            },
-            "description": "Sort direction"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Records retrieved successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecordsResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tables/{table}/records/{pk}": {
-      "get": {
-        "tags": [
-          "Data Access"
-        ],
-        "summary": "Get Record by Primary Key",
-        "description": "Fetch a single record by its primary key. Use for detail pages, profile views, or direct lookups.",
-        "operationId": "getRecordByPK",
-        "parameters": [
-          {
-            "name": "table",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Table name"
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "admin",
+              "service"
+            ],
+            "example": "user"
           },
-          {
-            "name": "pk",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Primary key value"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Record retrieved successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "description": "Record object with dynamic fields"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Record not found"
-          }
-        }
-      }
-    },
-    "/api/tables/{table}/search": {
-      "get": {
-        "tags": [
-          "Search"
-        ],
-        "summary": "Search Records (Single Table)",
-        "description": "Full-text search across text columns with auto-fallback. Auto-uses ClickHouse for speed, falls back to PostgreSQL if unavailable. Use for search bars, autocomplete, or fuzzy matching.",
-        "operationId": "searchTable",
-        "parameters": [
-          {
-            "name": "table",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Table name"
-          },
-          {
-            "name": "q",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 2,
-              "maxLength": 100
-            },
-            "description": "Search term"
-          },
-          {
-            "name": "columns",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "description": "Comma-separated columns to search"
-          },
-          {
-            "name": "engine",
-            "in": "query",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "clickhouse",
-                "postgresql",
-                "auto"
-              ]
-            },
-            "description": "Search engine to use (auto-selects by default)"
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 20,
-              "maximum": 100
-            },
-            "description": "Results per page"
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "description": "Pagination cursor"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Search results",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SearchResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/search/global": {
-      "get": {
-        "tags": [
-          "Search"
-        ],
-        "summary": "Global Search (All Tables)",
-        "description": "Search across all tables simultaneously with offset pagination. Use for universal search boxes, admin dashboards, or cross-entity discovery.",
-        "operationId": "globalSearch",
-        "parameters": [
-          {
-            "name": "q",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 2,
-              "maxLength": 100
-            },
-            "description": "Search term"
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 20,
-              "maximum": 100
-            },
-            "description": "Results per table"
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "schema": {
-              "type": "integer",
-              "default": 0
-            },
-            "description": "Skip N results"
-          },
-          {
-            "name": "page",
-            "in": "query",
-            "schema": {
-              "type": "integer"
-            },
-            "description": "Page number (alternative to offset)"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Global search results",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GlobalSearchResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/tables/{table}/stats": {
-      "get": {
-        "tags": [
-          "Analytics"
-        ],
-        "summary": "Get Table Statistics",
-        "description": "Get row counts and sync statistics. Use for dashboard metrics, data quality monitoring, or sync verification.",
-        "operationId": "getTableStats",
-        "parameters": [
-          {
-            "name": "table",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": "Table name"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Table statistics",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TableStats"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/webhook/telegram": {
-      "post": {
-        "tags": [
-          "Webhooks"
-        ],
-        "summary": "Telegram Webhook",
-        "description": "Receive Telegram bot commands: /start, /help, /list [table], /search [table] [query], /get [table] [id], /stats. Use for chat-based data access, notifications, or alerts.",
-        "operationId": "telegramWebhook",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "description": "Telegram webhook payload"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Command processed"
-          }
-        }
-      }
-    },
-    "/webhook/whatsapp": {
-      "get": {
-        "tags": [
-          "Webhooks"
-        ],
-        "summary": "WhatsApp Webhook Verification",
-        "description": "Webhook verification for WhatsApp integration",
-        "operationId": "whatsappVerification",
-        "responses": {
-          "200": {
-            "description": "Verification successful"
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
-      "post": {
-        "tags": [
-          "Webhooks"
-        ],
-        "summary": "WhatsApp Webhook",
-        "description": "Receive WhatsApp messages. Use for customer support bots or two-way messaging.",
-        "operationId": "whatsappWebhook",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "description": "WhatsApp webhook payload"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Message processed"
+      "APIKey": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "keyPrefix": {
+            "type": "string",
+            "example": "lsd_live_abc12..."
+          },
+          "name": {
+            "type": "string",
+            "example": "Production Bot"
+          },
+          "description": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "read",
+                "write",
+                "search",
+                "pipeline",
+                "admin"
+              ]
+            },
+            "example": [
+              "read",
+              "search"
+            ]
+          },
+          "rateLimit": {
+            "type": "integer",
+            "example": 5000
+          },
+          "lastUsedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
           }
         }
-      }
-    }
-  },
-  "components": {
-    "schemas": {
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "identifier",
+          "password"
+        ],
+        "properties": {
+          "identifier": {
+            "type": "string",
+            "description": "Email or username",
+            "example": "user@example.com"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "example": "P@ssw0rd!"
+          },
+          "rememberMe": {
+            "type": "boolean",
+            "default": false,
+            "description": "Extend session to 30 days"
+          }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "email",
+          "password"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 30,
+            "pattern": "^[a-zA-Z0-9_]+$",
+            "example": "johndoe"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "user@example.com"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Min 8 chars, must include:\n- Uppercase letter\n- Lowercase letter  \n- Number\n- Special character\n",
+            "example": "P@ssw0rd!"
+          },
+          "name": {
+            "type": "string",
+            "example": "John Doe"
+          }
+        }
+      },
+      "CreateAPIKeyRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "scopes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Production Bot"
+          },
+          "description": {
+            "type": "string",
+            "example": "API key for production automation"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "read",
+                "write",
+                "search",
+                "pipeline",
+                "admin"
+              ]
+            },
+            "example": [
+              "read",
+              "search"
+            ]
+          },
+          "rateLimit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50000,
+            "default": 1000,
+            "example": 5000
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "Authentication required"
+          },
+          "status": {
+            "type": "string",
+            "example": "error"
+          },
+          "code": {
+            "type": "string",
+            "example": "401"
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "Password does not meet requirements"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "Must contain uppercase letter",
+              "Must contain special character"
+            ]
+          }
+        }
+      },
       "TableInfo": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
-            "example": "b2b"
+            "example": "users"
           },
           "schema": {
             "type": "string",
@@ -577,7 +310,7 @@
           },
           "columns": {
             "type": "integer",
-            "example": 18
+            "example": 15
           },
           "primary_key": {
             "type": "array",
@@ -607,183 +340,30 @@
             }
           },
           "clickhouse_search": {
-            "type": "boolean",
-            "example": true
-          }
-        }
-      },
-      "TableSchema": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "schema": {
-            "type": "string"
-          },
-          "columns": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "data_type": {
-                  "type": "string"
-                },
-                "is_nullable": {
-                  "type": "boolean"
-                },
-                "is_primary_key": {
-                  "type": "boolean"
-                }
-              }
-            }
-          },
-          "primary_key": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "indexes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "sortable": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "filterable": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "searchable": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "clickhouse_search": {
             "type": "boolean"
           }
         }
       },
-      "RecordsResponse": {
-        "type": "object",
-        "properties": {
-          "data": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
-          },
-          "next_cursor": {
-            "type": "string"
-          },
-          "has_more": {
-            "type": "boolean"
-          },
-          "count": {
-            "type": "integer"
-          },
-          "table": {
-            "type": "string"
-          },
-          "cached": {
-            "type": "boolean"
-          }
-        }
-      },
-      "SearchResponse": {
-        "type": "object",
-        "properties": {
-          "data": {
-            "type": "array",
-            "items": {
-              "type": "object"
-            }
-          },
-          "next_cursor": {
-            "type": "string"
-          },
-          "has_more": {
-            "type": "boolean"
-          },
-          "count": {
-            "type": "integer"
-          },
-          "table": {
-            "type": "string"
-          },
-          "search_columns": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "search_engine": {
-            "type": "string",
-            "example": "clickhouse"
-          }
-        }
-      },
-      "GlobalSearchResponse": {
+      "SearchResult": {
         "type": "object",
         "properties": {
           "results": {
             "type": "object",
             "additionalProperties": {
-              "type": "object",
-              "properties": {
-                "results": {
-                  "type": "array",
-                  "items": {
-                    "type": "object"
-                  }
-                },
-                "count": {
-                  "type": "integer"
-                },
-                "total": {
-                  "type": "integer"
-                },
-                "page": {
-                  "type": "integer"
-                },
-                "limit": {
-                  "type": "integer"
-                },
-                "offset": {
-                  "type": "integer"
-                },
-                "total_pages": {
-                  "type": "integer"
-                },
-                "has_next": {
-                  "type": "boolean"
-                },
-                "has_previous": {
-                  "type": "boolean"
-                },
-                "search_engine": {
-                  "type": "string"
-                }
+              "type": "array",
+              "items": {
+                "type": "object"
               }
             }
           },
           "total_results": {
             "type": "integer"
           },
-          "tables_searched": {
-            "type": "integer"
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": "string"
           },
           "search_time": {
             "type": "integer",
@@ -791,39 +371,2309 @@
           },
           "query": {
             "type": "string"
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "offset": {
-            "type": "integer"
-          },
-          "page": {
-            "type": "integer"
-          },
-          "clickhouse_available": {
-            "type": "boolean"
           }
         }
       },
-      "TableStats": {
+      "LoadOptions": {
+        "type": "object",
+        "description": "Configuration options for file loading",
+        "properties": {
+          "has_header": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Override header detection (true/false, null = auto-detect)",
+            "example": true
+          },
+          "header_row": {
+            "type": "integer",
+            "description": "Row number to use as header (1-indexed), 0 = auto-detect",
+            "example": 1
+          },
+          "custom_headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "User-provided column names",
+            "example": [
+              "id",
+              "name",
+              "email",
+              "amount"
+            ]
+          },
+          "skip_rows": {
+            "type": "integer",
+            "description": "Skip N rows before processing",
+            "default": 0,
+            "example": 2
+          },
+          "delimiter": {
+            "type": "string",
+            "description": "Override delimiter (e.g., \",\", \";\", \"\\\\t\")",
+            "example": ","
+          },
+          "encoding": {
+            "type": "string",
+            "description": "Override encoding (e.g., \"UTF-8\", \"Latin-1\", \"Windows-1252\")",
+            "example": "UTF-8"
+          },
+          "remove_empty": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove empty rows"
+          },
+          "remove_duplicates": {
+            "type": "boolean",
+            "default": true,
+            "description": "Remove duplicate rows"
+          },
+          "infer_types": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable type inference (TEXT only if false)"
+          },
+          "empty_threshold": {
+            "type": "number",
+            "default": 0.99,
+            "description": "Threshold for removing empty columns (0-1)"
+          },
+          "max_file_size": {
+            "type": "integer",
+            "default": 524288000,
+            "description": "Max file size in bytes (default 500MB)"
+          },
+          "table_name": {
+            "type": "string",
+            "description": "Custom table name (optional)",
+            "example": "sales_data"
+          },
+          "sheets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Excel sheets to process (empty = all)",
+            "example": [
+              "Sheet1",
+              "Data"
+            ]
+          }
+        }
+      },
+      "HeaderInfo": {
+        "type": "object",
+        "description": "Detailed header detection results",
+        "properties": {
+          "has_header": {
+            "type": "boolean",
+            "description": "Whether a header was detected"
+          },
+          "header_row": {
+            "type": "integer",
+            "description": "Detected header row (1-indexed)"
+          },
+          "confidence": {
+            "type": "number",
+            "format": "float",
+            "description": "Detection confidence (0-1)",
+            "example": 0.95
+          },
+          "reason": {
+            "type": "string",
+            "description": "Reasoning for the detection",
+            "example": "Row 1 appears to be header (score: 0.85)"
+          },
+          "preview": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "First N rows for user review"
+          },
+          "column_count": {
+            "type": "integer",
+            "description": "Number of columns detected"
+          },
+          "sample_values": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "First value from each column"
+          }
+        }
+      },
+      "PreviewFileRequest": {
+        "type": "object",
+        "required": [
+          "file_path"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Path to the file to preview",
+            "example": "/data/uploads/sales_data.csv"
+          },
+          "rows": {
+            "type": "integer",
+            "default": 20,
+            "description": "Number of rows to preview"
+          },
+          "detect_types": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether to detect column types"
+          }
+        }
+      },
+      "PreviewFileResult": {
         "type": "object",
         "properties": {
-          "table": {
+          "encoding": {
+            "type": "string",
+            "description": "Detected file encoding",
+            "example": "UTF-8"
+          },
+          "delimiter": {
+            "type": "string",
+            "description": "Detected delimiter",
+            "example": ","
+          },
+          "header_info": {
+            "$ref": "#/components/schemas/HeaderInfo"
+          },
+          "preview": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Preview rows"
+          },
+          "column_count": {
+            "type": "integer",
+            "description": "Number of columns"
+          },
+          "total_rows": {
+            "type": "integer",
+            "description": "Total rows in file (if calculable)"
+          },
+          "detected_types": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Detected column types (if requested)",
+            "example": {
+              "id": "TEXT",
+              "amount": "NUMERIC"
+            }
+          },
+          "column_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Detected/cleaned column names",
+            "example": [
+              "id",
+              "name",
+              "email",
+              "amount"
+            ]
+          }
+        }
+      },
+      "LoadResult": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failed"
+            ]
+          },
+          "file": {
+            "type": "string",
+            "description": "Original file name"
+          },
+          "table_name": {
+            "type": "string",
+            "description": "Created table name"
+          },
+          "rows_inserted": {
+            "type": "integer",
+            "description": "Number of rows inserted"
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Column names in the created table"
+          },
+          "sheets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "table_name": {
+                  "type": "string"
+                },
+                "sheet_name": {
+                  "type": "string"
+                },
+                "rows_inserted": {
+                  "type": "integer"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "description": "Results for Excel sheets (multi-sheet files)"
+          },
+          "count": {
+            "type": "integer",
+            "description": "Number of sheets processed (Excel only)"
+          }
+        }
+      },
+      "StartJobRequest": {
+        "type": "object",
+        "required": [
+          "folder_path"
+        ],
+        "properties": {
+          "folder_path": {
+            "type": "string",
+            "description": "Path to the folder containing files to process",
+            "example": "/data/uploads"
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false,
+            "description": "Process subdirectories recursively"
+          },
+          "default_options": {
+            "$ref": "#/components/schemas/LoadOptions"
+          },
+          "file_options": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LoadOptions"
+            },
+            "description": "Per-file option overrides"
+          }
+        }
+      },
+      "JobProgress": {
+        "type": "object",
+        "properties": {
+          "job_id": {
             "type": "string"
           },
-          "schema": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "progress": {
+            "type": "integer",
+            "description": "Percentage complete (0-100)"
+          },
+          "total_files": {
+            "type": "integer"
+          },
+          "processed_files": {
+            "type": "integer"
+          },
+          "total_rows": {
+            "type": "integer"
+          },
+          "current_file": {
             "type": "string"
           },
-          "estimated_rows": {
-            "type": "integer"
-          },
-          "clickhouse_indexed": {
-            "type": "integer"
-          },
-          "clickhouse_last_sync": {
+          "started_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "estimated_completion": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          },
+          "log_path": {
+            "type": "string"
+          }
+        }
+      },
+      "CDCStatus": {
+        "type": "object",
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "last_sync": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "tables_synced": {
+            "type": "integer"
+          },
+          "total_events": {
+            "type": "integer"
+          },
+          "lag_seconds": {
+            "type": "integer"
+          }
+        }
+      },
+      "FileDiscovery": {
+        "type": "object",
+        "description": "Information about a discovered file",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Full path to the file",
+            "example": "/data/uploads/sales_data.csv"
+          },
+          "file_name": {
+            "type": "string",
+            "description": "Name of the file",
+            "example": "sales_data.csv"
+          },
+          "file_size": {
+            "type": "integer",
+            "description": "File size in bytes",
+            "example": 1024000
+          },
+          "extension": {
+            "type": "string",
+            "description": "File extension",
+            "example": ".csv"
+          },
+          "encoding": {
+            "type": "string",
+            "description": "Detected file encoding",
+            "example": "UTF-8"
+          },
+          "detected_delimiter": {
+            "type": "string",
+            "description": "Detected delimiter character",
+            "example": ","
+          },
+          "detected_header": {
+            "$ref": "#/components/schemas/HeaderInfo"
+          },
+          "preview": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Preview rows from the file"
+          },
+          "error": {
+            "type": "string",
+            "description": "Error message if detection failed"
+          }
+        }
+      },
+      "FolderScanResult": {
+        "type": "object",
+        "description": "Complete folder scan results",
+        "properties": {
+          "folder_path": {
+            "type": "string",
+            "description": "Scanned folder path"
+          },
+          "total_files": {
+            "type": "integer",
+            "description": "Total files in folder"
+          },
+          "supported_files": {
+            "type": "integer",
+            "description": "Number of supported files found"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileDiscovery"
+            },
+            "description": "List of discovered files"
+          },
+          "scan_time": {
+            "type": "string",
+            "description": "Time taken to scan"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Any errors encountered during scan"
+          }
+        }
+      },
+      "PipelineConfig": {
+        "type": "object",
+        "description": "Saved pipeline configuration",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Configuration ID",
+            "example": "550e8400-e29b-41d4-a716-446655440000"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "Owner user ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Configuration name",
+            "example": "Monthly Sales Import"
+          },
+          "description": {
+            "type": "string",
+            "description": "Configuration description",
+            "example": "Import monthly sales data from uploads folder"
+          },
+          "folder_path": {
+            "type": "string",
+            "description": "Target folder path",
+            "example": "/data/uploads/sales"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Process subdirectories",
+            "default": false
+          },
+          "default_options": {
+            "$ref": "#/components/schemas/LoadOptions"
+          },
+          "file_options": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LoadOptions"
+            },
+            "description": "Per-file option overrides"
+          },
+          "file_discoveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileDiscovery"
+            },
+            "description": "Cached file discoveries from last scan"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ScanFolderRequest": {
+        "type": "object",
+        "required": [
+          "folder_path"
+        ],
+        "properties": {
+          "folder_path": {
+            "type": "string",
+            "description": "Path to folder to scan",
+            "example": "/data/uploads"
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false,
+            "description": "Scan subdirectories"
+          },
+          "deep_scan": {
+            "type": "boolean",
+            "default": false,
+            "description": "Analyze headers/delimiters (slower but detailed)"
+          },
+          "parallel": {
+            "type": "boolean",
+            "default": false,
+            "description": "Use parallel processing for large folders"
+          }
+        }
+      },
+      "SaveConfigRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "folder_path"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Config ID (for updates)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Configuration name",
+            "example": "Monthly Sales Import"
+          },
+          "description": {
+            "type": "string",
+            "description": "Configuration description"
+          },
+          "folder_path": {
+            "type": "string",
+            "description": "Target folder path"
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false
+          },
+          "default_options": {
+            "$ref": "#/components/schemas/LoadOptions"
+          },
+          "file_options": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LoadOptions"
+            }
+          },
+          "file_discoveries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileDiscovery"
+            }
+          }
+        }
+      },
+      "StartJobWithConfigRequest": {
+        "type": "object",
+        "properties": {
+          "config_id": {
+            "type": "string",
+            "description": "ID of saved configuration to use",
+            "example": "550e8400-e29b-41d4-a716-446655440000"
+          },
+          "folder_path": {
+            "type": "string",
+            "description": "Override folder path (optional if config_id provided)"
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Override recursive setting"
+          },
+          "default_options": {
+            "$ref": "#/components/schemas/LoadOptions"
+          },
+          "file_options": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/LoadOptions"
+            },
+            "description": "Per-file option overrides"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/auth/register": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Register a new user",
+        "description": "Create a new user account with email, username, and password.\n\n**Rate Limit:** 1 request/second (stricter than normal endpoints)\n\n**Password Requirements:**\n- Minimum 8 characters\n- At least one uppercase letter\n- At least one lowercase letter\n- At least one number\n- At least one special character\n",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Registration successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "accessToken": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or password requirements not met",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Email or username already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Login to your account",
+        "description": "Authenticate with email/username and password.\n\n**Rate Limit:** 1 request/second (stricter than normal endpoints to prevent brute-force)\n",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "accessToken": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Set-Cookie": {
+                "description": "HTTP-only cookies for access_token and refresh_token",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Logout from current session",
+        "description": "Revoke the current session and clear cookies",
+        "responses": {
+          "200": {
+            "description": "Logout successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Get current user info",
+        "description": "Returns the authenticated user's profile information",
+        "responses": {
+          "200": {
+            "description": "User information",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/api-keys": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "List all API keys",
+        "description": "Get all API keys for the authenticated user",
+        "responses": {
+          "200": {
+            "description": "List of API keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apiKeys": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/APIKey"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Create a new API key",
+        "description": "Generate a new API key with specified scopes and rate limit.\n\nThe full API key is only shown once - store it securely!\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAPIKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "API key created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "apiKey": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "key": {
+                          "type": "string",
+                          "description": "The full API key (only shown once!)"
+                        },
+                        "keyPrefix": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "scopes": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "rateLimit": {
+                          "type": "integer"
+                        }
+                      }
+                    },
+                    "warning": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid scopes or request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/api-keys/{id}": {
+      "delete": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Revoke an API key",
+        "description": "Revoke (delete) an API key by its ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "API key ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "API key revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Health check",
+        "description": "Check if the API is running and healthy",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "UP"
+                    },
+                    "service": {
+                      "type": "string",
+                      "example": "L.S.D"
+                    },
+                    "tables_count": {
+                      "type": "integer"
+                    },
+                    "clickhouse": {
+                      "type": "boolean"
+                    },
+                    "redis": {
+                      "type": "boolean"
+                    },
+                    "version": {
+                      "type": "string",
+                      "example": "2.1.0"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables": {
+      "get": {
+        "tags": [
+          "Tables"
+        ],
+        "summary": "List all available tables",
+        "description": "Get a list of all tables discovered in the database with their metadata",
+        "responses": {
+          "200": {
+            "description": "List of tables",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tables": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TableInfo"
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/schema": {
+      "get": {
+        "tags": [
+          "Tables"
+        ],
+        "summary": "Get table schema",
+        "description": "Get detailed schema information for a specific table.\n\n**Security:** Table names are validated to prevent SQL injection.\n",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Table name (validated)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Table schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "schema": {
+                      "type": "string"
+                    },
+                    "columns": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "dataType": {
+                            "type": "string"
+                          },
+                          "nullable": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "primary_key": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "indexes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid table name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Table not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/records": {
+      "get": {
+        "tags": [
+          "Records"
+        ],
+        "summary": "Get records from a table",
+        "description": "Retrieve records from a table with pagination, filtering, and sorting",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Pagination cursor"
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_dir",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string"
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "table": {
+                      "type": "string"
+                    },
+                    "cached": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/records/{pk}": {
+      "get": {
+        "tags": [
+          "Records"
+        ],
+        "summary": "Get a single record by primary key",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pk",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Single record",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found"
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/search": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Search within a table",
+        "description": "Full-text search within a specific table.\n\n**Security:** Uses parameterized queries to prevent SQL injection.\n",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 100
+            },
+            "description": "Search term"
+          },
+          {
+            "name": "columns",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated list of columns to search"
+          },
+          {
+            "name": "engine",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "clickhouse",
+                "postgresql"
+              ]
+            },
+            "description": "Force a specific search engine"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string"
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "table": {
+                      "type": "string"
+                    },
+                    "search_columns": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "search_engine": {
+                      "type": "string",
+                      "enum": [
+                        "clickhouse",
+                        "postgresql"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tables/{table}/stats": {
+      "get": {
+        "tags": [
+          "Tables"
+        ],
+        "summary": "Get table statistics",
+        "parameters": [
+          {
+            "name": "table",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Table statistics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "table_name": {
+                      "type": "string"
+                    },
+                    "estimated_rows": {
+                      "type": "integer"
+                    },
+                    "table_size": {
+                      "type": "string"
+                    },
+                    "index_size": {
+                      "type": "string"
+                    },
+                    "clickhouse_indexed": {
+                      "type": "integer"
+                    },
+                    "clickhouse_last_sync": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search/": {
+      "get": {
+        "tags": [
+          "Search"
+        ],
+        "summary": "Global search across all tables",
+        "description": "Optimized full-text search across all indexed tables using ClickHouse bitmap indexing.\nThis is the fastest way to search billions of records.\n\n**Security:** All search queries use parameterized queries with `?` placeholders.\n",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 100
+            },
+            "description": "Search term"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Pagination cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results grouped by table",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResult"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "ClickHouse not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/start": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Start a pipeline job",
+        "description": "Start a new data pipeline job to process files from a folder.\n\n**Security:** \n- Paths are validated to prevent directory traversal\n- Access to system paths (/etc, /root, etc.) is blocked\n- File size limits are enforced\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartJobRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Job started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "job_id": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Path not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/jobs": {
+      "get": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "List all pipeline jobs",
+        "responses": {
+          "200": {
+            "description": "List of jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "jobs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/JobProgress"
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Get job status",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobProgress"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/jobs/{job_id}/logs": {
+      "get": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Get job logs",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job logs",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/jobs/{job_id}/stream": {
+      "get": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Stream job progress",
+        "description": "Server-sent events stream for real-time job progress",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/preview": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Preview a file",
+        "description": "Preview a file before loading to see detected encoding, delimiter, \nheader information, and sample data. Use this to determine how to \nconfigure your load options.\n\n**Supported Encodings:**\n- UTF-8 (default)\n- Latin-1 (ISO-8859-1)\n- Windows-1252\n- UTF-16LE/UTF-16BE\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewFileRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewFileResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/upload": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Upload and process a file",
+        "description": "Upload a file (CSV, Excel, JSON) with custom loading options.\nSupports custom headers, header row selection, skip rows, and more.\n\n**Supported File Types:**\n- CSV (.csv, .txt)\n- Excel (.xlsx, .xls)\n- JSON (.json)\n- JSON Lines (.jsonl)\n\n**Limits:**\n- In-memory: 64MB\n- Max file size: 500MB (configurable)\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "The file to upload"
+                  },
+                  "options": {
+                    "type": "string",
+                    "description": "JSON string of LoadOptions",
+                    "example": "{\"has_header\": true, \"delimiter\": \",\", \"skip_rows\": 0}"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File processed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoadResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid file or options",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "File too large",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/load": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Load a file from path",
+        "description": "Load a file from a server path with custom options.\nUseful for processing files already on the server.\n\n**Security:**\n- Paths are validated to prevent directory traversal\n- System paths are blocked (/etc, /root, /var, etc.)\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file_path"
+                ],
+                "properties": {
+                  "file_path": {
+                    "type": "string",
+                    "description": "Path to the file on the server",
+                    "example": "/data/uploads/sales_data.csv"
+                  },
+                  "options": {
+                    "$ref": "#/components/schemas/LoadOptions"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "File loaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoadResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Path not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/detect-header": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Detect header information",
+        "description": "Detect header row and configuration for a file.\nReturns confidence score and reasoning for the detection.\n\nThe detection algorithm checks for:\n- Common header keywords (id, name, email, etc.)\n- Data type patterns (numeric values indicate data, not headers)\n- Delimiter rows (----, ====)\n- CamelCase and snake_case patterns\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file_path"
+                ],
+                "properties": {
+                  "file_path": {
+                    "type": "string",
+                    "description": "Path to the file"
+                  },
+                  "options": {
+                    "$ref": "#/components/schemas/LoadOptions"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Header detection result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeaderInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/scan-folder": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Scan a folder for files",
+        "description": "Scan a folder and return information about all files, including detected\nheaders, delimiters, and encodings. Use this before starting a job to\nreview and customize how each file will be processed.\n\n**Two scan modes:**\n- **Quick scan** (deep_scan=false): Fast file listing only\n- **Deep scan** (deep_scan=true): Analyze headers, delimiters, encodings\n\n**Security:**\n- Paths are validated to prevent directory traversal\n- System paths are blocked\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanFolderRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Folder scan results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FolderScanResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Path not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Folder not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/configs": {
+      "get": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "List saved configurations",
+        "description": "Get all saved pipeline configurations for the authenticated user",
+        "responses": {
+          "200": {
+            "description": "List of configurations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "configs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PipelineConfig"
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Save a configuration",
+        "description": "Save a pipeline configuration with default options and per-file overrides.\nSaved configs can be reused for recurring imports.\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "config": {
+                      "$ref": "#/components/schemas/PipelineConfig"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/configs/{id}": {
+      "get": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Get a configuration",
+        "description": "Retrieve a specific pipeline configuration by ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Configuration ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configuration details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineConfig"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Configuration not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Delete a configuration",
+        "description": "Delete a saved pipeline configuration",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Configuration ID"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configuration deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Configuration not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/start-with-config": {
+      "post": {
+        "tags": [
+          "Pipeline"
+        ],
+        "summary": "Start job with configuration",
+        "description": "Start a pipeline job using a saved configuration ID or inline options.\n\n**Workflow:**\n1. Scan folder: `POST /api/pipeline/scan-folder`\n2. Review detected headers/delimiters\n3. Customize options per file (optional)\n4. Save config: `POST /api/pipeline/configs` (optional)\n5. Start job: `POST /api/pipeline/start-with-config`\n\n**Features:**\n- Use saved config by ID, or provide options inline\n- Override any setting from the saved config\n- Per-file option overrides for custom processing\n",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartJobWithConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Job started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "job_id": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "config_used": {
+                      "type": "boolean",
+                      "description": "Whether a saved config was used"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (missing folder_path or config_id)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Path not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Configuration not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cdc/status": {
+      "get": {
+        "tags": [
+          "CDC"
+        ],
+        "summary": "Get CDC status",
+        "description": "Get the current status of Change Data Capture synchronization",
+        "responses": {
+          "200": {
+            "description": "CDC status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CDCStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cdc/start": {
+      "post": {
+        "tags": [
+          "CDC"
+        ],
+        "summary": "Start CDC synchronization",
+        "description": "Start the Change Data Capture process",
+        "responses": {
+          "200": {
+            "description": "CDC started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/cdc/stop": {
+      "post": {
+        "tags": [
+          "CDC"
+        ],
+        "summary": "Stop CDC synchronization",
+        "description": "Stop the Change Data Capture process",
+        "responses": {
+          "200": {
+            "description": "CDC stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

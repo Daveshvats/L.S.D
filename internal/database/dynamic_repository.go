@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"highperf-api/internal/schema"
 
@@ -37,6 +38,11 @@ type CursorData struct {
 }
 
 func (r *DynamicRepository) GetRecords(ctx context.Context, params schema.QueryParams) (*DynamicResult, error) {
+	// SECURITY: Validate table name to prevent SQL injection
+	if err := r.registry.ValidateTableName(params.TableName); err != nil {
+		return nil, fmt.Errorf("invalid table name: %w", err)
+	}
+
 	// Decode cursor if present
 	var cursorData *CursorData
 	if params.Cursor != "" {
@@ -61,6 +67,8 @@ func (r *DynamicRepository) GetRecords(ctx context.Context, params schema.QueryP
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
+			// FIXED: Log error instead of silently swallowing
+			log.Printf("Warning: failed to read row values: %v", err)
 			continue
 		}
 
@@ -107,13 +115,20 @@ func (r *DynamicRepository) GetRecords(ctx context.Context, params schema.QueryP
 }
 
 func (r *DynamicRepository) GetRecordByPK(ctx context.Context, tableName string, pk interface{}) (map[string]interface{}, error) {
+	// SECURITY: Validate table name to prevent SQL injection
+	if err := r.registry.ValidateTableName(tableName); err != nil {
+		return nil, fmt.Errorf("invalid table name: %w", err)
+	}
+
 	table := r.registry.GetTable(tableName)
 	if table == nil || len(table.PrimaryKey) == 0 {
 		return nil, fmt.Errorf("table not found or no primary key")
 	}
 
 	pkColumn := table.PrimaryKey[0]
-	query := fmt.Sprintf("SELECT * FROM %s WHERE %s = $1 LIMIT 1", tableName, pkColumn)
+	// SECURITY: Use quoted identifiers to prevent SQL injection
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s = $1 LIMIT 1",
+		schema.QuoteIdent(tableName), schema.QuoteIdent(pkColumn))
 
 	rows, err := r.pool.Query(ctx, query, pk)
 	if err != nil {
@@ -142,11 +157,24 @@ func (r *DynamicRepository) GetRecordByPK(ctx context.Context, tableName string,
 }
 
 func (r *DynamicRepository) SearchRecords(ctx context.Context, params schema.QueryParams, searchColumn, searchTerm string) (*DynamicResult, error) {
+	// SECURITY: Validate search column
+	if err := r.registry.ValidateColumn(params.TableName, searchColumn); err != nil {
+		return nil, fmt.Errorf("invalid search column: %w", err)
+	}
 	params.Filters[searchColumn] = "%" + searchTerm + "%"
 	return r.GetRecords(ctx, params)
 }
 
 func (r *DynamicRepository) MultiColumnSearch(ctx context.Context, params schema.QueryParams, searchColumns []string, searchTerm string) (*DynamicResult, error) {
+	// SECURITY: Validate table name
+	if err := r.registry.ValidateTableName(params.TableName); err != nil {
+		return nil, fmt.Errorf("invalid table name: %w", err)
+	}
+	// SECURITY: Validate all search columns
+	if err := r.registry.ValidateColumns(params.TableName, searchColumns); err != nil {
+		return nil, fmt.Errorf("invalid search column: %w", err)
+	}
+
 	query, args := r.buildMultiColumnSearchQuery(params, searchColumns, searchTerm)
 
 	rows, err := r.pool.Query(ctx, query, args...)
@@ -159,6 +187,8 @@ func (r *DynamicRepository) MultiColumnSearch(ctx context.Context, params schema
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
+			// FIXED: Log error instead of silently swallowing
+			log.Printf("Warning: failed to read row values in search: %v", err)
 			continue
 		}
 
@@ -190,12 +220,12 @@ func (r *DynamicRepository) MultiColumnSearch(ctx context.Context, params schema
 
 func (r *DynamicRepository) GetTableStatsEstimated(ctx context.Context, tableName string) (map[string]interface{}, error) {
 	query := `
-        SELECT 
-            schemaname,
-            relname,
-            n_live_tup as estimated_rows
-        FROM pg_stat_user_tables
-        WHERE relname = $1
+	SELECT 
+	    schemaname,
+	    relname,
+	    n_live_tup as estimated_rows
+	FROM pg_stat_user_tables
+	WHERE relname = $1
     `
 
 	var schema, name string
@@ -221,11 +251,18 @@ func (r *DynamicRepository) buildQuery(params schema.QueryParams, cursorData *Cu
 		selectClause = "COUNT(*)"
 	}
 
-	query := fmt.Sprintf("SELECT %s FROM %s WHERE 1=1", selectClause, params.TableName)
+	// SECURITY: Use quoted identifier for table name
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE 1=1", selectClause, schema.QuoteIdent(params.TableName))
 
-	// Apply filters
+	// Apply filters - SECURITY: Validate and quote column names
 	for col, val := range params.Filters {
-		query += fmt.Sprintf(" AND %s = $%d", col, argPos)
+		// Validate column name exists in table
+		if err := r.registry.ValidateColumn(params.TableName, col); err != nil {
+			// Skip invalid columns instead of failing
+			log.Printf("Warning: skipping invalid filter column '%s': %v", col, err)
+			continue
+		}
+		query += fmt.Sprintf(" AND %s = $%d", schema.QuoteIdent(col), argPos)
 		args = append(args, val)
 		argPos++
 	}
@@ -250,10 +287,14 @@ func (r *DynamicRepository) buildQuery(params schema.QueryParams, cursorData *Cu
 						// Composite cursor condition for custom sort column + PK tiebreaker
 						if sortDir == "DESC" {
 							query += fmt.Sprintf(" AND (%s < $%d OR (%s = $%d AND %s < $%d))",
-								sortColumn, argPos, sortColumn, argPos, pkColumn, argPos+1)
+								schema.QuoteIdent(sortColumn), argPos,
+								schema.QuoteIdent(sortColumn), argPos,
+								schema.QuoteIdent(pkColumn), argPos+1)
 						} else {
 							query += fmt.Sprintf(" AND (%s > $%d OR (%s = $%d AND %s > $%d))",
-								sortColumn, argPos, sortColumn, argPos, pkColumn, argPos+1)
+								schema.QuoteIdent(sortColumn), argPos,
+								schema.QuoteIdent(sortColumn), argPos,
+								schema.QuoteIdent(pkColumn), argPos+1)
 						}
 						args = append(args, lastSortValue, lastPK)
 						argPos += 2
@@ -262,7 +303,7 @@ func (r *DynamicRepository) buildQuery(params schema.QueryParams, cursorData *Cu
 			} else {
 				// Default: sort by PK only
 				if lastID, ok := cursorData.LastRecord[pkColumn]; ok {
-					query += fmt.Sprintf(" AND %s > $%d", pkColumn, argPos)
+					query += fmt.Sprintf(" AND %s > $%d", schema.QuoteIdent(pkColumn), argPos)
 					args = append(args, lastID)
 					argPos++
 				}
@@ -283,18 +324,20 @@ func (r *DynamicRepository) buildQuery(params schema.QueryParams, cursorData *Cu
 			if table != nil && len(table.PrimaryKey) > 0 {
 				pkColumn := table.PrimaryKey[0]
 				if params.SortBy != pkColumn {
-					query += fmt.Sprintf(" ORDER BY %s %s, %s %s", params.SortBy, sortDir, pkColumn, sortDir)
+					query += fmt.Sprintf(" ORDER BY %s %s, %s %s",
+						schema.QuoteIdent(params.SortBy), sortDir,
+						schema.QuoteIdent(pkColumn), sortDir)
 				} else {
-					query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+					query += fmt.Sprintf(" ORDER BY %s %s", schema.QuoteIdent(params.SortBy), sortDir)
 				}
 			} else {
-				query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+				query += fmt.Sprintf(" ORDER BY %s %s", schema.QuoteIdent(params.SortBy), sortDir)
 			}
 		} else {
 			// Default sort by primary key for consistent pagination
 			table := r.registry.GetTable(params.TableName)
 			if table != nil && len(table.PrimaryKey) > 0 {
-				query += fmt.Sprintf(" ORDER BY %s ASC", table.PrimaryKey[0])
+				query += fmt.Sprintf(" ORDER BY %s ASC", schema.QuoteIdent(table.PrimaryKey[0]))
 			}
 		}
 
@@ -308,10 +351,12 @@ func (r *DynamicRepository) buildQuery(params schema.QueryParams, cursorData *Cu
 func (r *DynamicRepository) buildMultiColumnSearchQuery(params schema.QueryParams, searchColumns []string, searchTerm string) (string, []interface{}) {
 	var args []interface{}
 	argPos := 1
-	query := fmt.Sprintf("SELECT * FROM %s WHERE ", params.TableName)
+	// SECURITY: Use quoted identifier for table name
+	query := fmt.Sprintf("SELECT * FROM %s WHERE ", schema.QuoteIdent(params.TableName))
 	var searchConditions []string
 	for _, col := range searchColumns {
-		searchConditions = append(searchConditions, fmt.Sprintf("%s ILIKE $%d", col, argPos))
+		// SECURITY: Use quoted identifier for column name (already validated above)
+		searchConditions = append(searchConditions, fmt.Sprintf("%s ILIKE $%d", schema.QuoteIdent(col), argPos))
 		args = append(args, "%"+searchTerm+"%")
 		argPos++
 	}
@@ -322,8 +367,13 @@ func (r *DynamicRepository) buildMultiColumnSearchQuery(params schema.QueryParam
 	}
 	query += ")"
 
+	// Apply filters - SECURITY: Validate and quote column names
 	for col, val := range params.Filters {
-		query += fmt.Sprintf(" AND %s = $%d", col, argPos)
+		if err := r.registry.ValidateColumn(params.TableName, col); err != nil {
+			log.Printf("Warning: skipping invalid filter column '%s': %v", col, err)
+			continue
+		}
+		query += fmt.Sprintf(" AND %s = $%d", schema.QuoteIdent(col), argPos)
 		args = append(args, val)
 		argPos++
 	}
@@ -340,15 +390,17 @@ func (r *DynamicRepository) buildMultiColumnSearchQuery(params schema.QueryParam
 		if table != nil && len(table.PrimaryKey) > 0 {
 			pkColumn := table.PrimaryKey[0]
 			if params.SortBy != pkColumn {
-				query += fmt.Sprintf(" ORDER BY %s %s, %s %s", params.SortBy, sortDir, pkColumn, sortDir)
+				query += fmt.Sprintf(" ORDER BY %s %s, %s %s",
+					schema.QuoteIdent(params.SortBy), sortDir,
+					schema.QuoteIdent(pkColumn), sortDir)
 			} else {
-				query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+				query += fmt.Sprintf(" ORDER BY %s %s", schema.QuoteIdent(params.SortBy), sortDir)
 			}
 		} else {
-			query += fmt.Sprintf(" ORDER BY %s %s", params.SortBy, sortDir)
+			query += fmt.Sprintf(" ORDER BY %s %s", schema.QuoteIdent(params.SortBy), sortDir)
 		}
 	} else if table != nil && len(table.PrimaryKey) > 0 {
-		query += fmt.Sprintf(" ORDER BY %s ASC", table.PrimaryKey[0])
+		query += fmt.Sprintf(" ORDER BY %s ASC", schema.QuoteIdent(table.PrimaryKey[0]))
 	}
 
 	query += fmt.Sprintf(" LIMIT $%d", argPos)

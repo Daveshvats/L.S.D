@@ -35,7 +35,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION_STABLE: '1.24.x'
+  GO_VERSION_STABLE: '1.25.x'
   GO_VERSION_LTS: '1.22.x'
   GOLANGCI_LINT_VERSION: 'v2.0.2'
 

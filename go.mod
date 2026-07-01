@@ -1,6 +1,6 @@
 module highperf-api
-
-go 1.24.4
+go 1.25.0
+toolchain go1.25.11
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.42.0

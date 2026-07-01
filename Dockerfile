@@ -8,7 +8,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build
 # -----------------------------------------------------------------------------
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Build arguments for versioning
 ARG VERSION=dev
@@ -75,7 +75,7 @@ CMD ["--port", "8080"]
 # -----------------------------------------------------------------------------
 # Stage 3: Development (optional)
 # -----------------------------------------------------------------------------
-FROM golang:1.24-alpine AS development
+FROM golang:1.25-alpine AS development
 
 RUN apk add --no-cache git gcc musl-dev
 

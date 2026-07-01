@@ -4,9 +4,10 @@ toolchain go1.25.11
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.42.0
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/joho/godotenv v1.5.1
 	github.com/redis/go-redis/v9 v9.17.2
+	golang.org/x/net v0.55.0
 	golang.org/x/time v0.14.0
 )
 

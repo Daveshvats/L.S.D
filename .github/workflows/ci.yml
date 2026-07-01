@@ -104,10 +104,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ['1.24.x', '1.22.x']
+        go: ['1.25.x']
         os: [ubuntu-latest, macos-latest]
         include:
-          - go: '1.24.x'
+          - go: '1.25.x'
             os: ubuntu-latest
             coverage: true
     steps:
